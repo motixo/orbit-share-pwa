@@ -83,6 +83,7 @@ async function pairStore(action: 'list' | 'put' | 'delete', value?: PairedDevice
 }
 
 function renderPairs() {
+  document.querySelector<HTMLButtonElement>('#pair-link-submit')!.disabled = scanButton.disabled;
   const root = document.getElementById('paired')!;
   root.replaceChildren();
   for (const info of pairs) {
@@ -588,6 +589,43 @@ scanButton.addEventListener('click', async () => {
 });
 document.getElementById('cancel-scan')!.addEventListener('click', () => { stopCamera(); resumeConnection(); });
 
+const connectionForm = document.querySelector<HTMLFormElement>('#pair-link')!;
+const connectionInput = document.querySelector<HTMLInputElement>('#connection-link')!;
+const useLink = document.getElementById('use-link')!;
+const pairHelp = document.getElementById('pair-help')!;
+useLink.addEventListener('click', () => {
+  const showLink = connectionForm.hidden;
+  stopCamera();
+  scanButton.hidden = showLink;
+  connectionForm.hidden = !showLink;
+  pairHelp.hidden = showLink;
+  useLink.textContent = showLink ? 'Use camera' : 'Use a connection link';
+  useLink.setAttribute('aria-expanded', String(showLink));
+  if (showLink) connectionInput.focus();
+  else scanButton.focus();
+  resumeConnection();
+});
+connectionInput.addEventListener('input', () => connectionInput.removeAttribute('aria-invalid'));
+connectionForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (scanButton.disabled) return;
+  let info: DeviceInfo;
+  try { info = invitation(connectionInput.value.trim()); }
+  catch {
+    statusElement.textContent = 'Invalid connection link.';
+    connectionInput.setAttribute('aria-invalid', 'true');
+    connectionInput.focus();
+    return;
+  }
+  connectionInput.removeAttribute('aria-invalid');
+  try {
+    await connect(info);
+    if (session?.ready) connectionInput.value = '';
+  } catch (error) {
+    statusElement.textContent = errorMessage(error) || 'Could not connect';
+  }
+});
+
 document.querySelector<HTMLFormElement>('#files')!.addEventListener('submit', event => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -639,6 +677,30 @@ const shareRequested = pageQuery.get('view') === 'share' || pageQuery.has('previ
 let appInstalled = false;
 let started = false;
 
+function installationInstructions() {
+  const agent = navigator.userAgent;
+  const ios = /iPad|iPhone|iPod/.test(agent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const firefox = /Firefox\/|FxiOS\//.test(agent);
+  const other = /Edg|OPR|OPiOS|SamsungBrowser|Electron/.test(agent);
+  const chrome = !other && /Chrome\/|Chromium\/|CriOS\//.test(agent);
+  const safari = !other && !chrome && !firefox && /Safari\//.test(agent);
+  if (ios) {
+    if (chrome) return 'Chrome: Share → Add to Home Screen → Add.';
+    if (safari) return 'Safari: Share → Add to Home Screen → Add.';
+    return 'Open in Safari → Share → Add to Home Screen → Add.';
+  }
+  if (/Android/i.test(agent)) {
+    if (firefox) return 'Firefox: ⋮ → Install → Add automatically.';
+    if (chrome) return 'Chrome: ⋮ → Install and create shortcut → Install.';
+    return 'Open in Chrome → ⋮ → Install and create shortcut → Install.';
+  }
+  if (firefox && /Windows/.test(agent)) return 'Firefox: Address bar → Add tab to taskbar.';
+  if (safari) return 'Safari: File → Add to Dock → Add.';
+  if (chrome) return 'Chrome: ⋮ → Cast, save, and share → Install page as app…';
+  if (/Macintosh|Mac OS X/.test(agent)) return 'Open in Safari → File → Add to Dock → Add.';
+  return 'Open in Chrome → ⋮ → Cast, save, and share → Install page as app…';
+}
+
 function updateInstallation() {
   const sharing = shareRequested || appInstalled || appDisplayMode.matches || navigator.standalone === true;
   welcome.hidden = sharing;
@@ -647,10 +709,7 @@ function updateInstallation() {
   installButton.hidden = !installPrompt;
   installTitle.hidden = !!installPrompt;
   installHelp.hidden = !!installPrompt;
-  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  if (ios) installHelp.textContent = 'Safari: Share → Add to Home Screen.';
-  else if (/Android/i.test(navigator.userAgent)) installHelp.textContent = 'Browser menu (⋮) → Install app or Add to Home screen.';
-  else installHelp.textContent = 'Browser menu → Install app.';
+  installHelp.textContent = installationInstructions();
   if (sharing) start().catch(error => { statusElement.textContent = errorMessage(error); });
 }
 
@@ -672,7 +731,7 @@ installButton.addEventListener('click', async () => {
   installPrompt = undefined;
   updateInstallation();
   try { await prompt.prompt(); }
-  catch { statusElement.textContent = 'Use your browser menu to install.'; }
+  catch { statusElement.textContent = 'Use the installation steps above.'; }
 });
 updateInstallation();
 

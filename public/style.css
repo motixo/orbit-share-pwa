@@ -10,6 +10,13 @@ article, form, #installation { padding: 1rem; margin: 1rem 0; border: 1px solid 
 label { display: block; margin-bottom: .75rem; } small { opacity: .6; }
 button, .button { display: inline-block; border: 1px solid light-dark(#ccc, #484848); border-radius: .5rem; padding: .6rem .9rem; margin: .25rem; background: light-dark(#fff, #292929); color: inherit; font: inherit; text-decoration: none; cursor: pointer; }
 button:disabled { opacity: .5; cursor: wait; }
+#scan, #install { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; }
+#pair-link { display: flex; align-items: center; gap: .5rem; margin: .25rem 0; padding: 0; border: 0; }
+#connection-link { flex: 1; min-width: 0; margin: 0; padding: .65rem; border: 1px solid light-dark(#ccc, #484848); border-radius: .5rem; background: transparent; color: inherit; font: inherit; }
+#pair-link-submit { flex: none; margin: 0; }
+#pair-help { max-width: 28rem; margin: 2rem auto .25rem; font-size: .8rem; line-height: 1.6; opacity: .7; }
+#use-link { border: 0; padding: 0; background: none; font-size: .875rem; text-decoration: underline; }
+#use-link[aria-expanded="true"] { margin-top: 1.25rem; }
 .download:disabled { cursor: default; }
 textarea { box-sizing: border-box; display: block; width: 100%; min-height: 5rem; resize: vertical; margin: .5rem 0; padding: .65rem; border: 1px solid light-dark(#ccc, #484848); border-radius: .5rem; background: transparent; color: inherit; font: inherit; }
 input { display: block; max-width: 100%; margin: 0 auto .75rem; }
