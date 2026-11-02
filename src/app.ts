@@ -43,6 +43,7 @@ function resumeConnection() {
   if (current.ready && current.control.readyState === 'open') {
     current.lastSeen = performance.now();
     try { current.control.send('ping'); } catch { disconnected(current); }
+    void refreshItems(current);
   } else {
     clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
@@ -229,7 +230,13 @@ async function connect(info: DeviceInfo, retry = false) {
       (async () => {
         const message: unknown = JSON.parse(event.data);
         if (!isRecord(message)) throw new Error('Invalid response');
-        if (message.type === 'challenge') {
+        if (message.type === 'items') {
+          if (typeof message.revision !== 'number' || !Number.isSafeInteger(message.revision) || message.revision < 0) throw new Error('Invalid revision');
+          if (current.itemsRevision !== message.revision) {
+            current.itemsRevision = message.revision;
+            await refreshItems(current);
+          }
+        } else if (message.type === 'challenge') {
           if (!info.key || typeof message.value !== 'string' ||
             !message.value.startsWith('orbit-pair-v1\n' + info.fingerprint + '\n') ||
             !/^[0-9a-f]{64}$/.test(message.value.split('\n')[2] || '') || message.value.split('\n').length !== 3) throw new Error('Invalid challenge');
@@ -489,14 +496,16 @@ async function listItems(current: ShareSession) {
     row.append(name);
     const download = document.createElement('button');
     download.textContent = 'Download';
-    download.disabled = item.size === null;
+    download.className = 'download';
+    download.disabled = !item.downloadable;
     download.addEventListener('click', () => busy(download, async () => {
       if (session !== current || !current.ready) throw new Error('Disconnected');
+      if (!item.downloadable) return;
       const blob = await request('file', { index: item.index }, undefined, progress('Downloading'));
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = item.name;
+      link.download = item.filename;
       document.body.append(link);
       link.click();
       link.remove();
@@ -589,6 +598,7 @@ document.querySelector<HTMLFormElement>('#files')!.addEventListener('submit', ev
       await request('upload', { name: file.name }, file, progress('Uploading'));
     }
     form.reset();
+    if (session) await refreshItems(session);
   });
 });
 document.querySelector<HTMLFormElement>('#text')!.addEventListener('submit', event => {
@@ -602,6 +612,7 @@ document.querySelector<HTMLFormElement>('#text')!.addEventListener('submit', eve
     if (payload.size > 1024 * 1024) throw new Error('Text exceeds 1 MiB.');
     await request('text', {}, payload);
     form.reset();
+    if (session) await refreshItems(session);
   });
 });
 window.addEventListener('pagehide', () => {

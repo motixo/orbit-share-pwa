@@ -36,6 +36,7 @@ interface ShareSession {
   refreshing?: boolean;
   itemsChanged?: boolean;
   itemsTimer?: ReturnType<typeof setTimeout>;
+  itemsRevision?: number;
 }
 
 type RequestAction = 'list' | 'file' | 'upload' | 'text';
@@ -52,6 +53,8 @@ interface ResponseHeader {
 interface SharedItem {
   index: number;
   name: string;
+  filename: string;
+  downloadable: boolean;
   size: number | null;
   text?: string;
   source: 'desktop' | 'mobile';

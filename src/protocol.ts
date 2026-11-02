@@ -59,9 +59,13 @@ function validateItems(value: unknown): SharedItem[] {
       typeof item.name !== 'string' || item.size !== null && (typeof item.size !== 'number' ||
         !Number.isSafeInteger(item.size) || item.size < 0) ||
       item.text != null && typeof item.text !== 'string' ||
+      item.filename !== undefined && typeof item.filename !== 'string' ||
+      item.downloadable !== undefined && typeof item.downloadable !== 'boolean' ||
       item.source !== undefined && item.source !== 'desktop' && item.source !== 'mobile') throw new Error('Invalid file list');
     return {
       index: item.index, name: item.name, size: item.size,
+      filename: typeof item.filename === 'string' ? item.filename : item.name,
+      downloadable: item.size !== null && (typeof item.downloadable === 'boolean' ? item.downloadable : item.source !== 'mobile'),
       text: typeof item.text === 'string' ? item.text : undefined,
       source: item.source === 'mobile' ? 'mobile' : 'desktop',
     };

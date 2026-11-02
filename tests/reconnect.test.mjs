@@ -31,6 +31,7 @@ function connection() {
     info: { fingerprint: 'desktop' }, ready: true, retry: true, connecting: false,
   };
   app.select(current);
+  app.list(() => Promise.resolve());
   return { app, current, timers, element };
 }
 
