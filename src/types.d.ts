@@ -26,6 +26,10 @@ interface ShareSession {
   control: RTCDataChannel;
   info: DeviceInfo;
   ready: boolean;
+  connecting: boolean;
+  retry: boolean;
+  lastSeen: number;
+  heartbeat?: boolean;
   forgotten?: boolean;
   error?: string;
   name?: Promise<string>;

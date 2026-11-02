@@ -7,6 +7,48 @@ let installPrompt: BeforeInstallPromptEvent | undefined;
 let active = 0;
 let pairs: PairedDevice[] = [];
 let pairingDB: Promise<IDBDatabase> | undefined;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+let retryDelay = 1000;
+let pageClosed = false;
+
+function scheduleReconnect(current: ShareSession) {
+  if (session !== current || current.forgotten || !current.retry || pageClosed || scanning || reconnectTimer !== undefined) return;
+  statusElement.textContent = 'Reconnecting…';
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    if (session === current && !current.forgotten && current.retry && !pageClosed && !scanning) {
+      void connect(current.info, true);
+    }
+  }, retryDelay);
+  retryDelay = Math.min(retryDelay * 2, 5000);
+}
+
+function disconnected(current: ShareSession) {
+  if (session !== current) return;
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = undefined;
+  current.ready = false;
+  document.getElementById('connected')!.hidden = true;
+  statusElement.textContent = current.forgotten ? 'Forgotten' : current.error || 'Disconnected';
+  if (current.pc.connectionState !== 'closed') current.pc.close();
+  renderPairs();
+  scheduleReconnect(current);
+}
+
+function resumeConnection() {
+  const current = session;
+  if (!current || current.forgotten || !current.retry || current.connecting || pageClosed || scanning) return;
+  if (current.ready && current.control.readyState === 'open') {
+    current.lastSeen = performance.now();
+    try { current.control.send('ping'); } catch { disconnected(current); }
+  } else {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+    retryDelay = 1000;
+    void connect(current.info, true);
+  }
+}
 
 function pairStore(action: 'list'): Promise<unknown[]>;
 function pairStore(action: 'put', value: PairedDevice): Promise<void>;
@@ -56,19 +98,23 @@ function renderPairs() {
     forget.addEventListener('click', async () => {
       forget.disabled = true;
       const current = session?.info.fingerprint === info.fingerprint ? session : undefined;
-      if (current) current.forgotten = true;
+      if (current) {
+        current.forgotten = true;
+        clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
+      }
       try {
         if (current?.ready) await revokeDevice(current);
         await pairStore('delete', info.fingerprint);
         pairs = pairs.filter(pair => pair.fingerprint !== info.fingerprint);
         if (session?.info.fingerprint === info.fingerprint) {
           session.forgotten = true;
-          session.pc.close();
+          disconnected(session);
           statusElement.textContent = 'Forgotten';
         }
         renderPairs();
       } catch (error) {
-        if (current) current.forgotten = false;
+        if (current) { current.forgotten = false; resumeConnection(); }
         forget.disabled = false;
         statusElement.textContent = errorMessage(error);
       }
@@ -122,9 +168,10 @@ async function rememberDevice(message: Record<string, unknown>, current: ShareSe
   });
   if (!info.key) throw new Error('Invalid device');
   if (current.forgotten) return;
+  current.info = info;
   await pairStore('put', info);
   if (current.forgotten) { await pairStore('delete', info.fingerprint); return; }
-  current.info = info;
+  if (session !== current) return;
   pairs = [info, ...pairs.filter(pair => pair.fingerprint !== info.fingerprint)];
   renderPairs();
 }
@@ -140,20 +187,34 @@ async function deviceName() {
   return '';
 }
 
-async function connect(info: DeviceInfo) {
+async function connect(info: DeviceInfo, retry = false) {
   info = validateInfo(info);
   stopCamera();
-  session?.pc.close();
+  clearTimeout(reconnectTimer);
+  reconnectTimer = undefined;
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = undefined;
+  if (!retry) retryDelay = 1000;
+  const previous = session;
+  session = undefined;
+  previous?.pc.close();
   scanButton.disabled = true;
   document.getElementById('connected')!.hidden = true;
   statusElement.textContent = 'Connecting…';
   const pc = new RTCPeerConnection({ iceServers: [] });
   const control = pc.createDataChannel('orbit', { ordered: true });
-  const current: ShareSession = { pc, control, info, ready: false };
+  const current: ShareSession = { pc, control, info, ready: false, connecting: true, retry: true, lastSeen: performance.now() };
   session = current;
   renderPairs();
   control.addEventListener('message', event => {
-    if (event.data === 'device-info' || event.data === 'pairing') {
+    if (session !== current) return;
+    if (event.data === 'ping' || event.data === 'pong') {
+      current.heartbeat = true;
+      current.lastSeen = performance.now();
+      if (event.data === 'ping' && control.readyState === 'open') {
+        try { control.send('pong'); } catch { disconnected(current); }
+      }
+    } else if (event.data === 'device-info' || event.data === 'pairing') {
       current.name ??= deviceName();
       current.name.then(name => {
         if (control.readyState === 'open' && (name || event.data === 'pairing')) {
@@ -179,42 +240,49 @@ async function connect(info: DeviceInfo) {
       })().catch(error => {
         if (session !== current) return;
         statusElement.textContent = errorMessage(error);
-        if (!current.ready) { current.error = errorMessage(error); pc.close(); }
+        if (!current.ready) {
+          current.error = errorMessage(error);
+          current.retry = false;
+          disconnected(current);
+        }
       });
     }
   });
   const opened = new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => { pc.close(); reject(new Error('Could not connect. Open Orbit Share, or scan again.')); }, 15000);
+    const timer = setTimeout(() => { reject(new Error('Could not connect')); disconnected(current); }, 8000);
     const closed = () => { clearTimeout(timer); reject(new Error('Disconnected')); };
     control.addEventListener('close', closed, { once: true });
     control.addEventListener('open', () => control.send(info.key ? JSON.stringify({ type: 'auth', id: info.id }) : info.token), { once: true });
     control.addEventListener('message', function ready(event) {
       if (event.data === 'rejected' || event.data === 'unavailable') {
         clearTimeout(timer);
-        reject(new Error(event.data === 'rejected' ? 'Device not paired. Scan again.' : 'Open Orbit Share.'));
-        pc.close();
+        current.retry = event.data !== 'rejected';
+        current.error = event.data === 'rejected' ? 'Device not paired. Scan again.' : 'Open Orbit Share.';
+        reject(new Error(current.error));
+        disconnected(current);
         return;
       }
       if (event.data !== 'ready') return;
       clearTimeout(timer);
       control.removeEventListener('message', ready);
       current.ready = true;
+      current.lastSeen = performance.now();
       resolve();
     });
   });
   opened.catch(() => {});
   pc.addEventListener('connectionstatechange', () => {
-    if (session !== current || !['disconnected', 'failed', 'closed'].includes(pc.connectionState)) return;
-    current.ready = false;
-    document.getElementById('connected')!.hidden = true;
-    statusElement.textContent = current.forgotten ? 'Forgotten' : current.error || 'Disconnected';
-    if (pc.connectionState !== 'closed') pc.close();
-    renderPairs();
+    if (['failed', 'closed'].includes(pc.connectionState)) disconnected(current);
   });
+  control.addEventListener('close', () => disconnected(current), { once: true });
+  control.addEventListener('error', () => disconnected(current), { once: true });
   try {
     await pc.setLocalDescription(await pc.createOffer());
     const password = pc.localDescription?.sdp.match(/^a=ice-pwd:(.+)$/m)?.[1].trim();
-    if (!password || !/^[a-zA-Z0-9+/]{22,239}$/.test(password)) throw new Error('Unsupported browser');
+    if (!password || !/^[a-zA-Z0-9+/]{22,239}$/.test(password)) {
+      current.retry = false;
+      throw new Error('Unsupported browser');
+    }
     const credentials = 'libp2p+webrtc+v2/' + password;
     const answer = [
       'v=0', 'o=- 0 0 IN IP4 ' + info.host, 's=-', 't=0 0', 'a=ice-lite',
@@ -229,14 +297,24 @@ async function connect(info: DeviceInfo) {
     await pc.setRemoteDescription({ type: 'answer', sdp: answer });
     await opened;
     if (session !== current) { pc.close(); return; }
-    await listItems();
+    retryDelay = 1000;
+    heartbeatTimer = setInterval(() => {
+      if (session !== current || current.forgotten) return;
+      if (current.heartbeat && performance.now() - current.lastSeen >= 6000) disconnected(current);
+      else {
+        try { control.send('ping'); } catch { disconnected(current); }
+      }
+    }, 2000);
+    await listItems(current);
+    if (session !== current || !current.ready) return;
     document.getElementById('connected')!.hidden = false;
     statusElement.textContent = 'Connected';
   } catch (error) {
+    if (session !== current) return;
     current.error = errorMessage(error);
-    pc.close();
-    throw error;
+    disconnected(current);
   } finally {
+    current.connecting = false;
     if (session === current) { scanButton.disabled = active > 0; renderPairs(); }
   }
 }
@@ -363,9 +441,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '';
 }
 
-async function listItems() {
+async function listItems(current: ShareSession) {
   const response = await request('list');
   const items = validateItems(JSON.parse(await response.text()));
+  if (session !== current || !current.ready) return;
   const root = document.getElementById('items')!;
   root.replaceChildren();
   for (const item of items) {
@@ -431,6 +510,8 @@ scanButton.addEventListener('click', async () => {
   if (scanning) return;
   try {
     scanning = true;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
     camera = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 960 } }, audio: false });
     if (!scanning) { stopCamera(); return; }
     const video = document.querySelector('video')!;
@@ -455,9 +536,13 @@ scanButton.addEventListener('click', async () => {
       }
       await new Promise(resolve => setTimeout(resolve, 120));
     }
-  } catch (error) { stopCamera(); statusElement.textContent = errorMessage(error) || 'Could not open camera'; }
+  } catch (error) {
+    stopCamera();
+    statusElement.textContent = errorMessage(error) || 'Could not open camera';
+    resumeConnection();
+  }
 });
-document.getElementById('cancel-scan')!.addEventListener('click', stopCamera);
+document.getElementById('cancel-scan')!.addEventListener('click', () => { stopCamera(); resumeConnection(); });
 
 document.querySelector<HTMLFormElement>('#files')!.addEventListener('submit', event => {
   event.preventDefault();
@@ -484,7 +569,18 @@ document.querySelector<HTMLFormElement>('#text')!.addEventListener('submit', eve
     form.reset();
   });
 });
-window.addEventListener('pagehide', () => { stopCamera(); session?.pc.close(); });
+window.addEventListener('pagehide', () => {
+  pageClosed = true;
+  stopCamera();
+  clearTimeout(reconnectTimer);
+  reconnectTimer = undefined;
+  if (session) disconnected(session);
+});
+window.addEventListener('pageshow', () => { pageClosed = false; resumeConnection(); });
+window.addEventListener('online', resumeConnection);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') resumeConnection();
+});
 window.addEventListener('beforeinstallprompt', event => {
   event.preventDefault();
   installPrompt = event;

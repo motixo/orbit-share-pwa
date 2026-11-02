@@ -1,0 +1,95 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
+
+function connection() {
+  const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
+  const boundary = source.indexOf("scanButton.addEventListener('click'");
+  assert.ok(boundary > 0);
+  const timers = new Map();
+  const element = { replaceChildren() {}, hidden: false, textContent: '' };
+  let next = 0;
+  const app = runInNewContext(source.slice(0, boundary) + `
+    ({
+      select(value) { session = value; },
+      attempt(callback) { connect = callback; },
+      closePage() { pageClosed = true; },
+      schedule: scheduleReconnect, disconnected, resume: resumeConnection,
+    })`, {
+    document: { getElementById: () => element, querySelector: () => element },
+    performance: { now: () => 1000 },
+    setTimeout(callback, delay) { const id = ++next; timers.set(id, { callback, delay }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    clearInterval() {},
+  });
+  const current = {
+    pc: { connectionState: 'connected', close() { this.connectionState = 'closed'; } },
+    control: { readyState: 'open', send() {} },
+    info: { fingerprint: 'desktop' }, ready: true, retry: true, connecting: false,
+  };
+  app.select(current);
+  return { app, current, timers, element };
+}
+
+test('retries continue with a capped delay and stop after forgetting or rejection', () => {
+  const { app, current, timers } = connection();
+  let attempts = 0;
+  app.attempt(info => { assert.equal(info, current.info); attempts++; app.schedule(current); });
+  app.schedule(current);
+  app.schedule(current);
+  for (const delay of [1000, 2000, 4000, 5000, 5000]) {
+    assert.equal(timers.size, 1);
+    const [id, timer] = [...timers][0];
+    assert.equal(timer.delay, delay);
+    timers.delete(id);
+    timer.callback();
+  }
+  assert.equal(attempts, 5);
+  current.forgotten = true;
+  const [id, timer] = [...timers][0];
+  timers.delete(id);
+  timer.callback();
+  assert.equal(attempts, 5);
+  assert.equal(timers.size, 0);
+  current.forgotten = false;
+  current.retry = false;
+  app.schedule(current);
+  assert.equal(timers.size, 0);
+});
+
+test('stale connections cannot close a replacement and closing the page stops retries', () => {
+  const { app, current, timers, element } = connection();
+  const replacement = { ...current, pc: { ...current.pc } };
+  app.select(replacement);
+  app.disconnected(current);
+  assert.equal(replacement.pc.connectionState, 'connected');
+  assert.equal(timers.size, 0);
+  app.disconnected(replacement);
+  assert.equal(replacement.ready, false);
+  assert.equal(element.hidden, true);
+  assert.equal(timers.size, 1);
+  app.closePage();
+  const [id, timer] = [...timers][0];
+  timers.delete(id);
+  timer.callback();
+  assert.equal(timers.size, 0);
+});
+
+test('returning to the app probes live connections and immediately retries disconnected ones', () => {
+  const { app, current, timers } = connection();
+  let probes = 0;
+  let attempts = 0;
+  current.control.send = message => { assert.equal(message, 'ping'); probes++; };
+  app.attempt(() => { attempts++; });
+  app.resume();
+  assert.equal(probes, 1);
+  current.ready = false;
+  app.schedule(current);
+  app.resume();
+  assert.equal(attempts, 1);
+  assert.equal(timers.size, 0);
+  current.connecting = true;
+  app.resume();
+  assert.equal(attempts, 1);
+});
