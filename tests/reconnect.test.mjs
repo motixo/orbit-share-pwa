@@ -14,6 +14,8 @@ function connection() {
     ({
       select(value) { session = value; },
       attempt(callback) { connect = callback; },
+      list(callback) { listItems = callback; },
+      refresh: refreshItems,
       closePage() { pageClosed = true; },
       schedule: scheduleReconnect, disconnected, resume: resumeConnection,
     })`, {
@@ -92,4 +94,34 @@ test('returning to the app probes live connections and immediately retries disco
   current.connecting = true;
   app.resume();
   assert.equal(attempts, 1);
+});
+
+test('file updates coalesce while a list is loading and retry without reconnecting', async () => {
+  const { app, current, timers } = connection();
+  let finish;
+  let requests = 0;
+  app.list(() => {
+    requests++;
+    return requests === 1 ? new Promise(resolve => { finish = resolve; }) : Promise.resolve();
+  });
+  const pending = app.refresh(current);
+  await app.refresh(current);
+  await app.refresh(current);
+  assert.equal(requests, 1);
+  finish();
+  await pending;
+  assert.equal(requests, 2);
+  assert.equal(timers.size, 0);
+
+  app.list(() => Promise.reject(new Error('Busy')));
+  await app.refresh(current);
+  assert.equal(current.ready, true);
+  assert.equal(timers.size, 1);
+  const [id, timer] = [...timers][0];
+  timers.delete(id);
+  app.select({ ...current });
+  let staleRequests = 0;
+  app.list(() => { staleRequests++; });
+  timer.callback();
+  assert.equal(staleRequests, 0);
 });

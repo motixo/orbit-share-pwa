@@ -58,7 +58,12 @@ function validateItems(value: unknown): SharedItem[] {
     if (!isRecord(item) || typeof item.index !== 'number' || !Number.isSafeInteger(item.index) || item.index < 0 ||
       typeof item.name !== 'string' || item.size !== null && (typeof item.size !== 'number' ||
         !Number.isSafeInteger(item.size) || item.size < 0) ||
-      item.text != null && typeof item.text !== 'string') throw new Error('Invalid file list');
-    return { index: item.index, name: item.name, size: item.size, text: typeof item.text === 'string' ? item.text : undefined };
+      item.text != null && typeof item.text !== 'string' ||
+      item.source !== undefined && item.source !== 'desktop' && item.source !== 'mobile') throw new Error('Invalid file list');
+    return {
+      index: item.index, name: item.name, size: item.size,
+      text: typeof item.text === 'string' ? item.text : undefined,
+      source: item.source === 'mobile' ? 'mobile' : 'desktop',
+    };
   });
 }

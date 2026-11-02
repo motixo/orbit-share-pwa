@@ -26,6 +26,7 @@ function scheduleReconnect(current: ShareSession) {
 
 function disconnected(current: ShareSession) {
   if (session !== current) return;
+  clearTimeout(current.itemsTimer);
   clearInterval(heartbeatTimer);
   heartbeatTimer = undefined;
   current.ready = false;
@@ -196,6 +197,7 @@ async function connect(info: DeviceInfo, retry = false) {
   heartbeatTimer = undefined;
   if (!retry) retryDelay = 1000;
   const previous = session;
+  clearTimeout(previous?.itemsTimer);
   session = undefined;
   previous?.pc.close();
   scanButton.disabled = true;
@@ -214,6 +216,8 @@ async function connect(info: DeviceInfo, retry = false) {
       if (event.data === 'ping' && control.readyState === 'open') {
         try { control.send('pong'); } catch { disconnected(current); }
       }
+    } else if (event.data === 'items-changed') {
+      void refreshItems(current);
     } else if (event.data === 'device-info' || event.data === 'pairing') {
       current.name ??= deviceName();
       current.name.then(name => {
@@ -305,7 +309,7 @@ async function connect(info: DeviceInfo, retry = false) {
         try { control.send('ping'); } catch { disconnected(current); }
       }
     }, 2000);
-    await listItems(current);
+    await refreshItems(current);
     if (session !== current || !current.ready) return;
     document.getElementById('connected')!.hidden = false;
     statusElement.textContent = 'Connected';
@@ -441,6 +445,26 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '';
 }
 
+async function refreshItems(current: ShareSession) {
+  if (session !== current || !current.ready) return;
+  current.itemsChanged = true;
+  if (current.refreshing) return;
+  clearTimeout(current.itemsTimer);
+  current.refreshing = true;
+  try {
+    do {
+      current.itemsChanged = false;
+      await listItems(current);
+    } while (current.itemsChanged && session === current && current.ready);
+  } catch {
+    if (session === current && current.ready) {
+      current.itemsTimer = setTimeout(() => { void refreshItems(current); }, 1000);
+    }
+  } finally {
+    current.refreshing = false;
+  }
+}
+
 async function listItems(current: ShareSession) {
   const response = await request('list');
   const items = validateItems(JSON.parse(await response.text()));
@@ -451,12 +475,23 @@ async function listItems(current: ShareSession) {
     const row = document.createElement('article');
     const name = document.createElement('div');
     name.className = 'filename';
-    name.textContent = item.name;
+    const title = document.createElement('span');
+    title.textContent = item.name;
+    const source = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    source.classList.add('source');
+    source.setAttribute('viewBox', '0 0 24 24');
+    source.setAttribute('role', 'img');
+    source.setAttribute('aria-label', item.source === 'mobile' ? 'Mobile' : 'Desktop');
+    source.innerHTML = item.source === 'mobile'
+      ? '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18h4"/>'
+      : '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/>';
+    name.append(title, source);
     row.append(name);
     const download = document.createElement('button');
     download.textContent = 'Download';
     download.disabled = item.size === null;
     download.addEventListener('click', () => busy(download, async () => {
+      if (session !== current || !current.ready) throw new Error('Disconnected');
       const blob = await request('file', { index: item.index }, undefined, progress('Downloading'));
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');

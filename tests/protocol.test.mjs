@@ -41,12 +41,15 @@ test('file lists keep ordinary files and unavailable downloads while rejecting m
   const files = validateItems([
     { index: 0, name: 'photo.png', size: 2048, text: null },
     { index: 1, name: 'unavailable', size: null },
-    { index: 2, name: 'note.txt', size: 5, text: 'hello' },
+    { index: 2, name: 'note.txt', size: 5, text: 'hello', source: 'mobile' },
   ]);
   assert.equal(files.length, 3);
   assert.equal(files[1].size, null);
   assert.equal(files[2].text, 'hello');
-  for (const invalid of [null, [{ index: -1, name: 'bad', size: 0 }], [{ index: 0, name: 'bad', size: -1 }]]) {
+  assert.equal(files[0].source, 'desktop');
+  assert.equal(files[2].source, 'mobile');
+  for (const invalid of [null, [{ index: -1, name: 'bad', size: 0 }], [{ index: 0, name: 'bad', size: -1 }],
+    [{ index: 0, name: 'bad', size: 0, source: 'other' }]]) {
     assert.throws(() => validateItems(invalid));
   }
 });

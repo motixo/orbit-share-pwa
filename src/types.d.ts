@@ -33,6 +33,9 @@ interface ShareSession {
   forgotten?: boolean;
   error?: string;
   name?: Promise<string>;
+  refreshing?: boolean;
+  itemsChanged?: boolean;
+  itemsTimer?: ReturnType<typeof setTimeout>;
 }
 
 type RequestAction = 'list' | 'file' | 'upload' | 'text';
@@ -51,6 +54,7 @@ interface SharedItem {
   name: string;
   size: number | null;
   text?: string;
+  source: 'desktop' | 'mobile';
 }
 
 interface BeforeInstallPromptEvent extends Event {
