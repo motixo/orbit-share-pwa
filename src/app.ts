@@ -627,27 +627,73 @@ window.addEventListener('online', resumeConnection);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') resumeConnection();
 });
+const appDisplayMode = matchMedia('(display-mode: standalone)');
+const installation = document.getElementById('installation')!;
+const installButton = document.querySelector<HTMLButtonElement>('#install')!;
+const installTitle = document.getElementById('install-title')!;
+const installHelp = document.getElementById('install-help')!;
+const welcome = document.getElementById('welcome')!;
+const sharePage = document.getElementById('share-page')!;
+const pageQuery = new URLSearchParams(location.search);
+const shareRequested = pageQuery.get('view') === 'share' || pageQuery.has('preview') || !!location.hash;
+let appInstalled = false;
+let started = false;
+
+function updateInstallation() {
+  const sharing = shareRequested || appInstalled || appDisplayMode.matches || navigator.standalone === true;
+  welcome.hidden = sharing;
+  sharePage.hidden = !sharing;
+  installation.hidden = sharing;
+  installButton.hidden = !installPrompt;
+  installTitle.hidden = !!installPrompt;
+  installHelp.hidden = !!installPrompt;
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (ios) installHelp.textContent = 'Safari: Share → Add to Home Screen.';
+  else if (/Android/i.test(navigator.userAgent)) installHelp.textContent = 'Browser menu (⋮) → Install app or Add to Home screen.';
+  else installHelp.textContent = 'Browser menu → Install app.';
+  if (sharing) start().catch(error => { statusElement.textContent = errorMessage(error); });
+}
+
+appDisplayMode.addEventListener('change', updateInstallation);
+window.addEventListener('pageshow', updateInstallation);
+window.addEventListener('appinstalled', () => {
+  appInstalled = true;
+  installPrompt = undefined;
+  updateInstallation();
+});
 window.addEventListener('beforeinstallprompt', event => {
   event.preventDefault();
   installPrompt = event;
-  document.querySelector<HTMLButtonElement>('#install')!.hidden = false;
+  updateInstallation();
 });
-document.querySelector<HTMLButtonElement>('#install')!.addEventListener('click', async () => {
-  await installPrompt?.prompt();
+installButton.addEventListener('click', async () => {
+  const prompt = installPrompt;
+  if (!prompt) return;
   installPrompt = undefined;
-  document.querySelector<HTMLButtonElement>('#install')!.hidden = true;
+  updateInstallation();
+  try { await prompt.prompt(); }
+  catch { statusElement.textContent = 'Use your browser menu to install.'; }
 });
-if ('serviceWorker' in navigator) {
+updateInstallation();
+
+if ('serviceWorker' in navigator && !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {
+  const offline = document.getElementById('offline')!;
   navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready).then(() => {
-    document.getElementById('offline')!.textContent = matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 'Ready offline' : 'Ready offline · Add to Home Screen';
-  }).catch(() => { document.getElementById('offline')!.textContent = 'Offline setup failed. Reload to retry.'; });
+    offline.textContent = 'Ready offline';
+    offline.hidden = false;
+  }).catch(() => { offline.textContent = 'Offline setup failed. Reload to retry.'; offline.hidden = false; });
 }
 async function start() {
+  if (started) return;
+  started = true;
   let initial: DeviceInfo | undefined;
   if (location.hash) {
     try { initial = invitation(location.href); }
     catch (error) { statusElement.textContent = errorMessage(error); }
-    history.replaceState(null, '', location.pathname);
+    const url = new URL(location.href);
+    url.hash = '';
+    url.searchParams.set('view', 'share');
+    history.replaceState(null, '', url.pathname + url.search);
   }
   try {
     const saved = await pairStore('list');
@@ -663,4 +709,3 @@ async function start() {
   const info = initial || pairs[0];
   if (info) await connect(info);
 }
-start().catch(error => { statusElement.textContent = errorMessage(error); });

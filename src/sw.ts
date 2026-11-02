@@ -1,5 +1,5 @@
 const worker: ServiceWorkerGlobalScope = self as typeof self & ServiceWorkerGlobalScope;
-const CACHE = 'orbit-phone-v10';
+const CACHE = 'orbit-phone-v11';
 const FILES = ['/', '/index.html', '/style.css', '/app.js', '/protocol.js', '/vendor/jsQR.js', '/icon.svg', '/icon-192.png', '/icon-512.png', '/manifest.json'];
 worker.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES)).then(() => worker.skipWaiting()));
