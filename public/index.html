@@ -16,7 +16,22 @@
 <script src="app.js" defer></script>
 <body>
 <main>
-  <header><img src="icon.svg" width="96" height="96" alt=""><h1>Orbit Share</h1></header>
+  <header>
+    <img src="icon.svg" width="96" height="96" alt=""><h1>Orbit Share</h1>
+    <section id="paired" aria-label="Paired devices"></section>
+    <button id="scan">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" focusable="false">
+        <path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM12 12h4v4h-4zM18 12h3v3m-3 3h3v3h-3zm-6 0v3h3"/>
+        <path d="M5 5h2v2H5zM17 5h2v2h-2zM5 17h2v2H5z" fill="currentColor" stroke="none"/>
+      </svg>
+      <span>Pair Device</span>
+    </button>
+  </header>
+  <div id="connection-bar" hidden>
+    <p id="connected-device"></p>
+    <button id="disconnect" type="button">Disconnect</button>
+    <button id="forget-connected" type="button">Forget</button>
+  </div>
   <section id="welcome" hidden>
     <section id="installation" hidden aria-label="Install PWA">
       <strong id="install-title">Install PWA</strong>
@@ -34,35 +49,36 @@
   </section>
   <p id="status" role="status" aria-live="polite"></p>
   <section id="share-page" hidden aria-label="Orbit Share">
-    <button id="scan">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" focusable="false">
-        <path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM12 12h4v4h-4zM18 12h3v3m-3 3h3v3h-3zm-6 0v3h3"/>
-        <path d="M5 5h2v2H5zM17 5h2v2h-2zM5 17h2v2H5z" fill="currentColor" stroke="none"/>
-      </svg>
-      <span>Pair Device</span>
-    </button>
-    <form id="pair-link" hidden>
-      <input id="connection-link" type="url" inputmode="url" placeholder="Connection link" aria-label="Connection link" autocomplete="off" autocapitalize="off" spellcheck="false" required>
-      <button id="pair-link-submit">Connect</button>
-    </form>
-    <p id="pair-help">Scanning requires camera access. You can also pair with a connection link.</p>
-    <button id="use-link" type="button" aria-controls="pair-link" aria-expanded="false">Use a connection link</button>
-    <section id="camera" hidden><video playsinline muted></video><button id="cancel-scan">Cancel</button></section>
-    <p id="offline" hidden></p>
-    <section id="paired" aria-label="Paired computers"></section>
-    <div id="connected" hidden>
-      <section id="items"></section>
-      <h2>Send to Orbit</h2>
-      <form id="files">
-        <label for="upload">Files <small>Up to 1 GiB each</small></label>
-        <input id="upload" type="file" multiple required>
-        <button>Send files</button>
+    <section id="pairing">
+      <form id="pair-link" hidden>
+        <input id="connection-link" type="url" inputmode="url" placeholder="Connection link" aria-label="Connection link" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+        <button id="pair-link-submit">Connect</button>
       </form>
-      <form id="text">
+      <p id="pair-help">Scanning requires camera access. You can also pair with a connection link.</p>
+      <button id="use-link" type="button" aria-controls="pair-link" aria-expanded="false">Use a connection link</button>
+      <section id="camera" hidden><video playsinline muted></video><button id="cancel-scan">Cancel</button></section>
+    </section>
+    <p id="offline" hidden></p>
+    <div id="connected" hidden>
+      <section id="items" aria-label="Shared items" tabindex="0"></section>
+      <form id="text" hidden>
         <label for="message">Text or link</label>
         <textarea id="message" placeholder="Paste here" required></textarea>
         <button>Send</button>
       </form>
+      <footer id="transfer-actions">
+        <form id="files">
+          <input id="upload" type="file" aria-label="Files" multiple required hidden>
+          <button id="choose-files" type="button">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/></svg>
+            <span>Upload Files</span>
+          </button>
+        </form>
+        <button id="paste-clipboard" type="button">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M8 4H5v18h14V4h-3M8 11h8m-8 4h8"/></svg>
+          <span>Paste Clipboard</span>
+        </button>
+      </footer>
     </div>
   </section>
 </main>

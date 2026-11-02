@@ -61,13 +61,19 @@ function validateItems(value: unknown): SharedItem[] {
       item.text != null && typeof item.text !== 'string' ||
       item.filename !== undefined && typeof item.filename !== 'string' ||
       item.downloadable !== undefined && typeof item.downloadable !== 'boolean' ||
-      item.source !== undefined && item.source !== 'desktop' && item.source !== 'mobile') throw new Error('Invalid file list');
+      item.source !== undefined && item.source !== 'desktop' && item.source !== 'mobile' ||
+      item.sender !== undefined && typeof item.sender !== 'string' ||
+      item.removable !== undefined && typeof item.removable !== 'boolean' ||
+      item.kind !== undefined && (typeof item.kind !== 'string' || !['file', 'text', 'link', 'image', 'video'].includes(item.kind))) throw new Error('Invalid file list');
     return {
       index: item.index, name: item.name, size: item.size,
       filename: typeof item.filename === 'string' ? item.filename : item.name,
       downloadable: item.size !== null && (typeof item.downloadable === 'boolean' ? item.downloadable : item.source !== 'mobile'),
       text: typeof item.text === 'string' ? item.text : undefined,
       source: item.source === 'mobile' ? 'mobile' : 'desktop',
+      sender: typeof item.sender === 'string' && item.sender.trim() ? item.sender.slice(0, 256) : item.source === 'mobile' ? 'Mobile' : 'Desktop',
+      removable: item.removable === true,
+      kind: typeof item.kind === 'string' ? item.kind as SharedItem['kind'] : typeof item.text === 'string' ? 'text' : 'file',
     };
   });
 }

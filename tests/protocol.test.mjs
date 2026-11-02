@@ -50,17 +50,27 @@ test('file lists keep ordinary files and unavailable downloads while rejecting m
   assert.equal(files[2].source, 'mobile');
   assert.equal(files[0].downloadable, true);
   assert.equal(files[2].downloadable, false);
+  assert.equal(files[0].sender, 'Desktop');
+  assert.equal(files[2].sender, 'Mobile');
+  assert.equal(files[0].removable, false);
+  assert.equal(files[2].kind, 'text');
   const received = validateItems([
     { index: 3, name: 'Text preview', filename: 'uuid.html', size: 5, source: 'mobile', downloadable: true },
-    { index: 4, name: 'My upload', size: 5, source: 'mobile', downloadable: false },
+    { index: 4, name: 'My upload', size: 5, source: 'mobile', downloadable: false, sender: 'iPhone', removable: true, kind: 'image' },
   ]);
   assert.equal(received[0].name, 'Text preview');
   assert.equal(received[0].filename, 'uuid.html');
   assert.equal(received[0].downloadable, true);
   assert.equal(received[1].downloadable, false);
+  assert.equal(received[1].sender, 'iPhone');
+  assert.equal(received[1].removable, true);
+  assert.equal(received[1].kind, 'image');
   for (const invalid of [null, [{ index: -1, name: 'bad', size: 0 }], [{ index: 0, name: 'bad', size: -1 }],
     [{ index: 0, name: 'bad', size: 0, source: 'other' }],
-    [{ index: 0, name: 'bad', size: 0, downloadable: 'true' }]]) {
+    [{ index: 0, name: 'bad', size: 0, downloadable: 'true' }],
+    [{ index: 0, name: 'bad', size: 0, sender: 123 }],
+    [{ index: 0, name: 'bad', size: 0, removable: 'true' }],
+    [{ index: 0, name: 'bad', size: 0, kind: 'unknown' }]]) {
     assert.throws(() => validateItems(invalid));
   }
 });

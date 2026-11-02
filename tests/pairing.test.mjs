@@ -24,7 +24,7 @@ test('manual pairing replaces scanning and validates pasted links without reques
   const help = element();
   const scan = element();
   const status = { textContent: '' };
-  const elements = { 'pair-link': form, 'connection-link': input, 'use-link': toggle, 'pair-help': help };
+  const elements = { 'pair-link': form, 'connection-link': input, 'use-link': toggle, 'pair-help': help, connected: element(true) };
   const connections = [];
   let stopped = 0;
   runInNewContext(readFileSync(new URL('../dist/protocol.js', import.meta.url), 'utf8') + '\n' + source.slice(begin, end), {

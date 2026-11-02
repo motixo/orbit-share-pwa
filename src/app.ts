@@ -31,6 +31,7 @@ function disconnected(current: ShareSession) {
   heartbeatTimer = undefined;
   current.ready = false;
   document.getElementById('connected')!.hidden = true;
+  clearThumbnails(current);
   statusElement.textContent = current.forgotten ? 'Forgotten' : current.error || 'Disconnected';
   if (current.pc.connectionState !== 'closed') current.pc.close();
   renderPairs();
@@ -84,8 +85,19 @@ async function pairStore(action: 'list' | 'put' | 'delete', value?: PairedDevice
 
 function renderPairs() {
   document.querySelector<HTMLButtonElement>('#pair-link-submit')!.disabled = scanButton.disabled;
+  document.getElementById('connection-bar')!.hidden = !session?.ready;
+  document.querySelector<HTMLButtonElement>('#disconnect')!.disabled = active > 0;
+  document.querySelector<HTMLButtonElement>('#forget-connected')!.disabled = active > 0 || !session?.info.key || !!session.forgotten;
+  const device = document.getElementById('connected-device')!;
+  device.hidden = !session?.ready;
+  device.textContent = session?.ready ? `${'name' in session.info && session.info.name || 'Computer'} · ${session.info.host}` : '';
   const root = document.getElementById('paired')!;
   root.replaceChildren();
+  if (pairs.length) {
+    const heading = document.createElement('h2');
+    heading.textContent = 'Paired devices';
+    root.append(heading);
+  }
   for (const info of pairs) {
     const row = document.createElement('article');
     const name = document.createElement('span');
@@ -98,33 +110,48 @@ function renderPairs() {
     const forget = document.createElement('button');
     forget.textContent = 'Forget';
     forget.disabled = active > 0 || Boolean(session?.forgotten && session.info.fingerprint === info.fingerprint);
-    forget.addEventListener('click', async () => {
-      forget.disabled = true;
-      const current = session?.info.fingerprint === info.fingerprint ? session : undefined;
-      if (current) {
-        current.forgotten = true;
-        clearTimeout(reconnectTimer);
-        reconnectTimer = undefined;
-      }
-      try {
-        if (current?.ready) await revokeDevice(current);
-        await pairStore('delete', info.fingerprint);
-        pairs = pairs.filter(pair => pair.fingerprint !== info.fingerprint);
-        if (session?.info.fingerprint === info.fingerprint) {
-          session.forgotten = true;
-          disconnected(session);
-          statusElement.textContent = 'Forgotten';
-        }
-        renderPairs();
-      } catch (error) {
-        if (current) { current.forgotten = false; resumeConnection(); }
-        forget.disabled = false;
-        statusElement.textContent = errorMessage(error);
-      }
-    });
+    forget.addEventListener('click', () => forgetDevice(info, forget));
     row.append(name, button, forget);
     root.append(row);
   }
+}
+
+async function forgetDevice(info: DeviceInfo, button: HTMLButtonElement) {
+  button.disabled = true;
+  const current = session?.info.fingerprint === info.fingerprint ? session : undefined;
+  if (current) {
+    current.forgotten = true;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
+  try {
+    if (current?.ready) await revokeDevice(current);
+    await pairStore('delete', info.fingerprint);
+    pairs = pairs.filter(pair => pair.fingerprint !== info.fingerprint);
+    if (session?.info.fingerprint === info.fingerprint) {
+      session.forgotten = true;
+      disconnected(session);
+      statusElement.textContent = 'Forgotten';
+    }
+    renderPairs();
+  } catch (error) {
+    if (current) { current.forgotten = false; resumeConnection(); }
+    button.disabled = false;
+    statusElement.textContent = errorMessage(error);
+  }
+}
+
+function disconnect() {
+  const current = session;
+  if (!current) return;
+  current.retry = false;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = undefined;
+  disconnected(current);
+  session = undefined;
+  stopCamera();
+  statusElement.textContent = '';
+  renderPairs();
 }
 
 function revokeDevice(current: ShareSession): Promise<void> {
@@ -200,6 +227,7 @@ async function connect(info: DeviceInfo, retry = false) {
   if (!retry) retryDelay = 1000;
   const previous = session;
   clearTimeout(previous?.itemsTimer);
+  if (previous) clearThumbnails(previous);
   session = undefined;
   previous?.pc.close();
   scanButton.disabled = true;
@@ -320,6 +348,11 @@ async function connect(info: DeviceInfo, retry = false) {
     await refreshItems(current);
     if (session !== current || !current.ready) return;
     document.getElementById('connected')!.hidden = false;
+    scanButton.hidden = false;
+    document.querySelector<HTMLFormElement>('#pair-link')!.hidden = true;
+    document.getElementById('pair-help')!.hidden = false;
+    document.getElementById('use-link')!.textContent = 'Use a connection link';
+    document.getElementById('use-link')!.setAttribute('aria-expanded', 'false');
     statusElement.textContent = 'Connected';
   } catch (error) {
     if (session !== current) return;
@@ -473,32 +506,85 @@ async function refreshItems(current: ShareSession) {
   }
 }
 
+function icon(path: string) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '20');
+  svg.setAttribute('height', '20');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.5');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  shape.setAttribute('d', path);
+  svg.append(shape);
+  return svg;
+}
+
+function clearThumbnails(current: ShareSession) {
+  for (const pending of current.thumbnails?.values() ?? []) {
+    void pending.then(url => { if (url) URL.revokeObjectURL(url); });
+  }
+  current.thumbnails?.clear();
+}
+
 async function listItems(current: ShareSession) {
   const response = await request('list');
   const items = validateItems(JSON.parse(await response.text()));
   if (session !== current || !current.ready) return;
+  const indices = new Set(items.map(item => item.index));
+  for (const [index, pending] of current.thumbnails ?? []) {
+    if (indices.has(index)) continue;
+    current.thumbnails!.delete(index);
+    void pending.then(url => { if (url) URL.revokeObjectURL(url); });
+  }
   const root = document.getElementById('items')!;
+  const expanded = new Set(Array.from(root.querySelectorAll<HTMLDetailsElement>('details[open]'), node => node.dataset.index));
   root.replaceChildren();
   for (const item of items) {
     const row = document.createElement('article');
-    const name = document.createElement('div');
-    name.className = 'filename';
-    const title = document.createElement('span');
-    title.textContent = item.name;
-    const source = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    source.classList.add('source');
-    source.setAttribute('viewBox', '0 0 24 24');
-    source.setAttribute('role', 'img');
-    source.setAttribute('aria-label', item.source === 'mobile' ? 'Mobile' : 'Desktop');
-    source.innerHTML = item.source === 'mobile'
-      ? '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18h4"/>'
-      : '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/>';
-    name.append(title, source);
-    row.append(name);
+    row.className = 'item-row';
     const download = document.createElement('button');
-    download.textContent = 'Download';
-    download.className = 'download';
+    download.type = 'button';
+    download.className = 'item-action download';
+    download.setAttribute('aria-label', `Download ${item.name}`);
+    download.append(icon('M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5'));
     download.disabled = !item.downloadable;
+    const preview = document.createElement('div');
+    preview.className = 'item-preview';
+    const glyphs = {
+      file: 'M14 2H5v20h14V7zm0 0v5h5',
+      text: 'M14 2H5v20h14V7zm0 0v5h5M8 12h8m-8 4h8',
+      link: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM3 12h18M12 3a17 17 0 0 1 0 18 17 17 0 0 1 0-18',
+      image: 'M3 3h18v18H3zM3 17l5-5 4 4 3-3 6 6M16 7h1',
+      video: 'M3 3h18v18H3zM10 8l6 4-6 4z',
+    };
+    preview.append(icon(glyphs[item.kind]));
+    const name = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'item-name';
+    title.textContent = item.name;
+    const meta = document.createElement('div');
+    meta.className = 'item-meta';
+    const detail = document.createElement('span');
+    detail.className = 'item-detail';
+    detail.textContent = item.size === null ? 'Missing' : item.kind === 'link' ? 'Link' : item.text === undefined ? item.filename : 'Text';
+    const sender = document.createElement('span');
+    sender.className = 'sender';
+    sender.textContent = item.sender;
+    meta.append(detail, sender);
+    name.append(title, meta);
+    const info = document.createElement(item.text === undefined ? 'div' : 'details');
+    info.className = 'item-info';
+    if (info instanceof HTMLDetailsElement) {
+      info.dataset.index = String(item.index);
+      info.open = expanded.has(String(item.index));
+      const summary = document.createElement('summary');
+      summary.append(name);
+      info.append(summary);
+    } else info.append(name);
     download.addEventListener('click', () => busy(download, async () => {
       if (session !== current || !current.ready) throw new Error('Disconnected');
       if (!item.downloadable) return;
@@ -512,7 +598,18 @@ async function listItems(current: ShareSession) {
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     }));
-    row.append(download);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'item-action';
+    remove.setAttribute('aria-label', `Remove ${item.name}`);
+    remove.append(icon('M5 12h14'));
+    remove.disabled = !item.removable;
+    remove.addEventListener('click', () => busy(remove, async () => {
+      if (session !== current || !current.ready) throw new Error('Disconnected');
+      await request('remove', { index: item.index });
+      await refreshItems(current);
+    }));
+    row.append(download, preview, info, remove);
     if (typeof item.text === 'string') {
       const text = item.text;
       const field = document.createElement('textarea');
@@ -525,7 +622,7 @@ async function listItems(current: ShareSession) {
         try { await navigator.clipboard.writeText(text); statusElement.textContent = 'Copied'; }
         catch { field.focus(); field.select(); statusElement.textContent = 'Select and copy the text.'; }
       });
-      row.append(field, copy);
+      info.append(field, copy);
       try {
         const url = new URL(text.trim());
         if (url.protocol === 'https:' || url.protocol === 'http:') {
@@ -535,11 +632,26 @@ async function listItems(current: ShareSession) {
           open.href = url.href;
           open.target = '_blank';
           open.rel = 'noreferrer noopener';
-          row.append(open);
+          info.append(open);
         }
       } catch {}
     }
     root.append(row);
+    if (item.kind === 'image' || item.kind === 'video') {
+      current.thumbnails ??= new Map();
+      let pending = current.thumbnails.get(item.index);
+      if (!pending) {
+        pending = request('thumbnail', { index: item.index }).then(blob => URL.createObjectURL(new Blob([blob], { type: 'image/png' }))).catch(() => undefined);
+        current.thumbnails.set(item.index, pending);
+      }
+      void pending.then(url => {
+        if (!url || session !== current || !current.ready || !row.isConnected) return;
+        const image = document.createElement('img');
+        image.alt = '';
+        image.src = url;
+        preview.replaceChildren(image);
+      });
+    }
   }
 }
 
@@ -588,6 +700,10 @@ scanButton.addEventListener('click', async () => {
   }
 });
 document.getElementById('cancel-scan')!.addEventListener('click', () => { stopCamera(); resumeConnection(); });
+document.getElementById('disconnect')!.addEventListener('click', disconnect);
+document.querySelector<HTMLButtonElement>('#forget-connected')!.addEventListener('click', event => {
+  if (session && event.currentTarget instanceof HTMLButtonElement) void forgetDevice(session.info, event.currentTarget);
+});
 
 const connectionForm = document.querySelector<HTMLFormElement>('#pair-link')!;
 const connectionInput = document.querySelector<HTMLInputElement>('#connection-link')!;
@@ -596,7 +712,7 @@ const pairHelp = document.getElementById('pair-help')!;
 useLink.addEventListener('click', () => {
   const showLink = connectionForm.hidden;
   stopCamera();
-  scanButton.hidden = showLink;
+  scanButton.hidden = showLink && document.getElementById('connected')!.hidden;
   connectionForm.hidden = !showLink;
   pairHelp.hidden = showLink;
   useLink.textContent = showLink ? 'Use camera' : 'Use a connection link';
@@ -626,17 +742,29 @@ connectionForm.addEventListener('submit', async event => {
   }
 });
 
+async function uploadFiles(files: Iterable<File>) {
+  for (const file of files) {
+    if (file.size > 1024 ** 3) throw new Error('File exceeds 1 GiB.');
+    await request('upload', { name: file.name }, file, progress('Uploading'));
+  }
+  if (session) await refreshItems(session);
+}
+
+async function sendText(value: string) {
+  const payload = new Blob([value], { type: 'text/plain;charset=utf-8' });
+  if (!value.trim()) throw new Error('Enter text.');
+  if (payload.size > 1024 * 1024) throw new Error('Text exceeds 1 MiB.');
+  await request('text', {}, payload);
+  if (session) await refreshItems(session);
+}
+
 document.querySelector<HTMLFormElement>('#files')!.addEventListener('submit', event => {
   event.preventDefault();
   const form = event.currentTarget;
   if (!(form instanceof HTMLFormElement)) return;
   busy(form.querySelector('button')!, async () => {
-    for (const file of document.querySelector<HTMLInputElement>('#upload')!.files ?? []) {
-      if (file.size > 1024 ** 3) throw new Error('File exceeds 1 GiB.');
-      await request('upload', { name: file.name }, file, progress('Uploading'));
-    }
+    await uploadFiles(document.querySelector<HTMLInputElement>('#upload')!.files ?? []);
     form.reset();
-    if (session) await refreshItems(session);
   });
 });
 document.querySelector<HTMLFormElement>('#text')!.addEventListener('submit', event => {
@@ -645,13 +773,57 @@ document.querySelector<HTMLFormElement>('#text')!.addEventListener('submit', eve
   if (!(form instanceof HTMLFormElement)) return;
   busy(form.querySelector('button')!, async () => {
     const value = document.querySelector<HTMLTextAreaElement>('#message')!.value;
-    const payload = new Blob([value], { type: 'text/plain;charset=utf-8' });
-    if (!value.trim()) throw new Error('Enter text.');
-    if (payload.size > 1024 * 1024) throw new Error('Text exceeds 1 MiB.');
-    await request('text', {}, payload);
+    await sendText(value);
     form.reset();
-    if (session) await refreshItems(session);
+    form.hidden = true;
   });
+});
+
+const uploadInput = document.querySelector<HTMLInputElement>('#upload')!;
+const chooseFiles = document.querySelector<HTMLButtonElement>('#choose-files')!;
+chooseFiles.addEventListener('click', () => uploadInput.click());
+uploadInput.addEventListener('change', () => {
+  if (uploadInput.files?.length) document.querySelector<HTMLFormElement>('#files')!.requestSubmit();
+});
+const pasteClipboard = document.querySelector<HTMLButtonElement>('#paste-clipboard')!;
+pasteClipboard.addEventListener('click', async () => {
+  pasteClipboard.disabled = true;
+  try {
+    const value = await navigator.clipboard.readText();
+    await busy(pasteClipboard, () => sendText(value));
+  } catch {
+    document.querySelector<HTMLFormElement>('#text')!.hidden = false;
+    document.querySelector<HTMLTextAreaElement>('#message')!.focus();
+  } finally { pasteClipboard.disabled = false; }
+});
+
+const itemBox = document.getElementById('items')!;
+let dragDepth = 0;
+const acceptsDrop = (data: DataTransfer | null) => !!data && ['Files', 'text/plain', 'text/uri-list'].some(type => data.types.includes(type));
+itemBox.addEventListener('dragenter', event => {
+  if (!acceptsDrop(event.dataTransfer)) return;
+  event.preventDefault();
+  dragDepth++;
+  itemBox.classList.add('dragging');
+});
+itemBox.addEventListener('dragover', event => {
+  if (!acceptsDrop(event.dataTransfer)) return;
+  event.preventDefault();
+  event.dataTransfer!.dropEffect = 'copy';
+});
+itemBox.addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) { dragDepth = 0; itemBox.classList.remove('dragging'); }
+});
+itemBox.addEventListener('drop', event => {
+  event.preventDefault();
+  dragDepth = 0;
+  itemBox.classList.remove('dragging');
+  const data = event.dataTransfer;
+  if (!data || !session?.ready) return;
+  const files = Array.from(data.files);
+  const text = data.getData('text/plain') || data.getData('text/uri-list').split(/\r?\n/).filter(line => line && !line.startsWith('#')).join('\n');
+  if (files.length) void busy(chooseFiles, () => uploadFiles(files));
+  else if (text.trim()) void busy(pasteClipboard, () => sendText(text));
 });
 window.addEventListener('pagehide', () => {
   pageClosed = true;

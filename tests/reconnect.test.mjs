@@ -8,18 +8,31 @@ function connection() {
   const boundary = source.indexOf("scanButton.addEventListener('click'");
   assert.ok(boundary > 0);
   const timers = new Map();
-  const element = { replaceChildren() {}, hidden: false, textContent: '' };
+  const elements = new Map();
+  const makeElement = () => ({
+    children: [], hidden: false, textContent: '',
+    replaceChildren() { this.children = []; },
+    append(...children) { this.children.push(...children); },
+    addEventListener() {},
+  });
+  const getElement = id => {
+    if (!elements.has(id)) elements.set(id, makeElement());
+    return elements.get(id);
+  };
   let next = 0;
   const app = runInNewContext(source.slice(0, boundary) + `
     ({
       select(value) { session = value; },
       attempt(callback) { connect = callback; },
       list(callback) { listItems = callback; },
+      saved(value) { pairs = value; renderPairs(); },
+      pairs: () => pairs,
+      disconnect,
       refresh: refreshItems,
       closePage() { pageClosed = true; },
       schedule: scheduleReconnect, disconnected, resume: resumeConnection,
     })`, {
-    document: { getElementById: () => element, querySelector: () => element },
+    document: { getElementById: getElement, querySelector: selector => getElement(selector), createElement: makeElement },
     performance: { now: () => 1000 },
     setTimeout(callback, delay) { const id = ++next; timers.set(id, { callback, delay }); return id; },
     clearTimeout(id) { timers.delete(id); },
@@ -32,8 +45,26 @@ function connection() {
   };
   app.select(current);
   app.list(() => Promise.resolve());
-  return { app, current, timers, element };
+  return { app, current, timers, element: getElement('connected'), paired: getElement('paired') };
 }
+
+test('disconnect keeps saved devices, clears retries, and hides the connected view', () => {
+  const { app, current, timers, element, paired } = connection();
+  const devices = [{ ...current.info, name: 'Computer' }];
+  app.saved(devices);
+  assert.equal(paired.children.length, 2);
+  app.schedule(current);
+  app.disconnect();
+  assert.equal(current.pc.connectionState, 'closed');
+  assert.equal(element.hidden, true);
+  assert.equal(current.retry, false);
+  assert.equal(timers.size, 0);
+  assert.equal(app.pairs(), devices);
+  app.resume();
+  assert.equal(timers.size, 0);
+  app.saved([]);
+  assert.equal(paired.children.length, 0);
+});
 
 test('retries continue with a capped delay and stop after forgetting or rejection', () => {
   const { app, current, timers } = connection();

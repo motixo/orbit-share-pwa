@@ -37,9 +37,10 @@ interface ShareSession {
   itemsChanged?: boolean;
   itemsTimer?: ReturnType<typeof setTimeout>;
   itemsRevision?: number;
+  thumbnails?: Map<number, Promise<string | undefined>>;
 }
 
-type RequestAction = 'list' | 'file' | 'upload' | 'text';
+type RequestAction = 'list' | 'file' | 'upload' | 'text' | 'remove' | 'thumbnail';
 interface RequestFields {
   index?: number;
   name?: string;
@@ -58,6 +59,9 @@ interface SharedItem {
   size: number | null;
   text?: string;
   source: 'desktop' | 'mobile';
+  sender: string;
+  removable: boolean;
+  kind: 'file' | 'text' | 'link' | 'image' | 'video';
 }
 
 interface BeforeInstallPromptEvent extends Event {
