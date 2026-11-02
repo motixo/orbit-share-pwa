@@ -1,37 +1,45 @@
-'use strict';
-
-const status = document.getElementById('status');
-const scanButton = document.getElementById('scan');
-let session;
-let camera;
+const statusElement = document.getElementById('status')!;
+const scanButton = document.querySelector<HTMLButtonElement>('#scan')!;
+let session: ShareSession | undefined;
+let camera: MediaStream | undefined;
 let scanning = false;
-let installPrompt;
+let installPrompt: BeforeInstallPromptEvent | undefined;
 let active = 0;
-let pairs = [];
-let pairingDB;
-const deviceID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+let pairs: PairedDevice[] = [];
+let pairingDB: Promise<IDBDatabase> | undefined;
 
-async function pairStore(action, value) {
-  pairingDB ??= new Promise((resolve, reject) => {
+function pairStore(action: 'list'): Promise<unknown[]>;
+function pairStore(action: 'put', value: PairedDevice): Promise<void>;
+function pairStore(action: 'delete', value: string): Promise<void>;
+async function pairStore(action: 'list' | 'put' | 'delete', value?: PairedDevice | string): Promise<unknown[] | void> {
+  pairingDB ??= new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open('orbit-pairing', 1);
     request.onupgradeneeded = () => request.result.createObjectStore('devices', { keyPath: 'fingerprint' });
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error('Could not open device storage'));
   });
   const db = await pairingDB;
-  return new Promise((resolve, reject) => {
+  return new Promise<unknown[] | void>((resolve, reject) => {
     const transaction = db.transaction('devices', action === 'list' ? 'readonly' : 'readwrite');
     const store = transaction.objectStore('devices');
-    const request = action === 'put' ? store.put(value) : action === 'delete' ? store.delete(value) : store.getAll();
-    let result;
-    request.onsuccess = () => { result = request.result; };
-    transaction.oncomplete = () => resolve(result);
+    let result: unknown;
+    if (action === 'list') {
+      const request = store.getAll();
+      request.onsuccess = () => { result = request.result; };
+    } else if (action === 'put' && typeof value === 'object') store.put(value);
+    else if (action === 'delete' && typeof value === 'string') store.delete(value);
+    else throw new Error('Invalid device');
+    transaction.oncomplete = () => {
+      if (action !== 'list') resolve();
+      else if (Array.isArray(result)) resolve(result);
+      else reject(new Error('Invalid device storage'));
+    };
     transaction.onerror = transaction.onabort = () => reject(new Error('Could not save device'));
   });
 }
 
 function renderPairs() {
-  const root = document.getElementById('paired');
+  const root = document.getElementById('paired')!;
   root.replaceChildren();
   for (const info of pairs) {
     const row = document.createElement('article');
@@ -40,11 +48,11 @@ function renderPairs() {
     name.textContent = info.name || 'Computer';
     const button = document.createElement('button');
     button.textContent = 'Connect';
-    button.disabled = active > 0 || session && (!session.ready || session.forgotten) && session.pc.connectionState !== 'closed';
-    button.addEventListener('click', () => connect(info).catch(error => { status.textContent = error.message; }));
+    button.disabled = active > 0 || Boolean(session && (!session.ready || session.forgotten) && session.pc.connectionState !== 'closed');
+    button.addEventListener('click', () => connect(info).catch(error => { statusElement.textContent = errorMessage(error); }));
     const forget = document.createElement('button');
     forget.textContent = 'Forget';
-    forget.disabled = active > 0 || session?.forgotten && session.info.fingerprint === info.fingerprint;
+    forget.disabled = active > 0 || Boolean(session?.forgotten && session.info.fingerprint === info.fingerprint);
     forget.addEventListener('click', async () => {
       forget.disabled = true;
       const current = session?.info.fingerprint === info.fingerprint ? session : undefined;
@@ -56,13 +64,13 @@ function renderPairs() {
         if (session?.info.fingerprint === info.fingerprint) {
           session.forgotten = true;
           session.pc.close();
-          status.textContent = 'Forgotten';
+          statusElement.textContent = 'Forgotten';
         }
         renderPairs();
       } catch (error) {
         if (current) current.forgotten = false;
         forget.disabled = false;
-        status.textContent = error.message;
+        statusElement.textContent = errorMessage(error);
       }
     });
     row.append(name, button, forget);
@@ -70,8 +78,8 @@ function renderPairs() {
   }
 }
 
-function revokeDevice(current) {
-  return new Promise((resolve, reject) => {
+function revokeDevice(current: ShareSession): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
     const control = current.control;
     const cleanup = () => {
       clearTimeout(timer);
@@ -79,7 +87,7 @@ function revokeDevice(current) {
       control.removeEventListener('close', closed);
     };
     const closed = () => { cleanup(); reject(new Error('Could not forget device. Try again.')); };
-    const message = event => {
+    const message = (event: MessageEvent<unknown>) => {
       if (event.data === 'forgotten') {
         cleanup();
         try { if (control.readyState === 'open') control.send('forget-complete'); } catch {}
@@ -94,12 +102,12 @@ function revokeDevice(current) {
   });
 }
 
-async function rememberDevice(message, current) {
-  if (session !== current || current.forgotten || !current.ready || !deviceID.test(message.id) ||
-    message.fingerprint?.toUpperCase() !== current.info.fingerprint.toUpperCase()) throw new Error('Invalid device');
+async function rememberDevice(message: Record<string, unknown>, current: ShareSession) {
+  if (session !== current || current.forgotten || !current.ready || typeof message.id !== 'string' || !deviceID.test(message.id) ||
+    typeof message.fingerprint !== 'string' || message.fingerprint.toUpperCase() !== current.info.fingerprint.toUpperCase()) throw new Error('Invalid device');
   let key = current.info.key;
   if (message.token) {
-    if (!/^[0-9a-f]{64}$/i.test(message.token)) throw new Error('Invalid device');
+    if (typeof message.token !== 'string' || !/^[0-9a-f]{64}$/i.test(message.token)) throw new Error('Invalid device');
     const secret = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message.token));
     key = await crypto.subtle.importKey('raw', secret, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     new Uint8Array(secret).fill(0);
@@ -112,6 +120,7 @@ async function rememberDevice(message, current) {
     mdns: message.mdns || '', id: message.id, key,
     name: typeof message.name === 'string' ? message.name.slice(0, 80) : 'Computer', last: Date.now(),
   });
+  if (!info.key) throw new Error('Invalid device');
   if (current.forgotten) return;
   await pairStore('put', info);
   if (current.forgotten) { await pairStore('delete', info.fingerprint); return; }
@@ -120,44 +129,6 @@ async function rememberDevice(message, current) {
   renderPairs();
 }
 
-function invitation(value) {
-  const url = new URL(value);
-  if (url.origin !== location.origin || url.hash.length > 2048) throw new Error('Invalid QR');
-  const data = atob(url.hash.slice(1).replace(/-/g, '+').replace(/_/g, '/'));
-  let info;
-  if (data.charCodeAt(0) === 1) {
-    if (data.length !== 71) throw new Error('Invalid QR');
-    const bytes = Uint8Array.from(data, char => char.charCodeAt(0));
-    const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0'));
-    info = {
-      host: Array.from(bytes.slice(1, 5)).join('.'),
-      port: bytes[5] * 256 + bytes[6],
-      fingerprint: hex(bytes.slice(7, 39)).join(':'),
-      token: hex(bytes.slice(39)).join(''),
-    };
-  } else {
-    info = JSON.parse(data);
-  }
-  return validateInfo(info);
-}
-
-function validateInfo(info) {
-  if (!info || typeof info.host !== 'string' || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(info.host)) throw new Error('Invalid address');
-  const octets = info.host.split('.').map(Number);
-  if (octets.some(n => n > 255) || !(octets[0] === 10 || octets[0] === 192 && octets[1] === 168 ||
-    octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31 || octets[0] === 169 && octets[1] === 254)) throw new Error('Local network required');
-  if (!Number.isInteger(info.port) || info.port < 1 || info.port > 65535 ||
-    typeof info.fingerprint !== 'string' || !/^(?:[0-9a-f]{2}:){31}[0-9a-f]{2}$/i.test(info.fingerprint)) throw new Error('Invalid QR');
-  if (info.key) {
-    if (!deviceID.test(info.id) || !(info.key instanceof CryptoKey) || info.key.extractable ||
-      info.key.type !== 'secret' || info.key.algorithm.name !== 'HMAC' ||
-      info.key.algorithm.hash?.name !== 'SHA-256' || !info.key.usages.includes('sign')) throw new Error('Invalid device');
-  } else if (!/^[0-9a-f]{64}$/i.test(info.token)) throw new Error('Invalid QR');
-  if (info.mdns && (typeof info.mdns !== 'string' || !info.mdns.endsWith('.local') ||
-    !deviceID.test(info.mdns.slice(0, -6)))) throw new Error('Invalid device');
-  info.fingerprint = info.fingerprint.toUpperCase();
-  return info;
-}
 
 async function deviceName() {
   try {
@@ -169,16 +140,16 @@ async function deviceName() {
   return '';
 }
 
-async function connect(info) {
+async function connect(info: DeviceInfo) {
   info = validateInfo(info);
   stopCamera();
   session?.pc.close();
   scanButton.disabled = true;
-  document.getElementById('connected').hidden = true;
-  status.textContent = 'Connecting…';
+  document.getElementById('connected')!.hidden = true;
+  statusElement.textContent = 'Connecting…';
   const pc = new RTCPeerConnection({ iceServers: [] });
   const control = pc.createDataChannel('orbit', { ordered: true });
-  const current = { pc, control, info, ready: false };
+  const current: ShareSession = { pc, control, info, ready: false };
   session = current;
   renderPairs();
   control.addEventListener('message', event => {
@@ -191,7 +162,8 @@ async function connect(info) {
       }).catch(() => {});
     } else if (typeof event.data === 'string' && event.data.startsWith('{')) {
       (async () => {
-        const message = JSON.parse(event.data);
+        const message: unknown = JSON.parse(event.data);
+        if (!isRecord(message)) throw new Error('Invalid response');
         if (message.type === 'challenge') {
           if (!info.key || typeof message.value !== 'string' ||
             !message.value.startsWith('orbit-pair-v1\n' + info.fingerprint + '\n') ||
@@ -202,16 +174,16 @@ async function connect(info) {
         } else if (message.type === 'paired' && !current.forgotten) {
           await rememberDevice(message, current);
         } else if (message.type === 'pairing-error') {
-          status.textContent = 'Could not remember device';
+          statusElement.textContent = 'Could not remember device';
         }
       })().catch(error => {
         if (session !== current) return;
-        status.textContent = error.message;
-        if (!current.ready) { current.error = error.message; pc.close(); }
+        statusElement.textContent = errorMessage(error);
+        if (!current.ready) { current.error = errorMessage(error); pc.close(); }
       });
     }
   });
-  const opened = new Promise((resolve, reject) => {
+  const opened = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => { pc.close(); reject(new Error('Could not connect. Open Orbit Share, or scan again.')); }, 15000);
     const closed = () => { clearTimeout(timer); reject(new Error('Disconnected')); };
     control.addEventListener('close', closed, { once: true });
@@ -234,14 +206,14 @@ async function connect(info) {
   pc.addEventListener('connectionstatechange', () => {
     if (session !== current || !['disconnected', 'failed', 'closed'].includes(pc.connectionState)) return;
     current.ready = false;
-    document.getElementById('connected').hidden = true;
-    status.textContent = current.forgotten ? 'Forgotten' : current.error || 'Disconnected';
+    document.getElementById('connected')!.hidden = true;
+    statusElement.textContent = current.forgotten ? 'Forgotten' : current.error || 'Disconnected';
     if (pc.connectionState !== 'closed') pc.close();
     renderPairs();
   });
   try {
     await pc.setLocalDescription(await pc.createOffer());
-    const password = pc.localDescription.sdp.match(/^a=ice-pwd:(.+)$/m)?.[1].trim();
+    const password = pc.localDescription?.sdp.match(/^a=ice-pwd:(.+)$/m)?.[1].trim();
     if (!password || !/^[a-zA-Z0-9+/]{22,239}$/.test(password)) throw new Error('Unsupported browser');
     const credentials = 'libp2p+webrtc+v2/' + password;
     const answer = [
@@ -258,10 +230,10 @@ async function connect(info) {
     await opened;
     if (session !== current) { pc.close(); return; }
     await listItems();
-    document.getElementById('connected').hidden = false;
-    status.textContent = 'Connected';
+    document.getElementById('connected')!.hidden = false;
+    statusElement.textContent = 'Connected';
   } catch (error) {
-    current.error = error.message;
+    current.error = errorMessage(error);
     pc.close();
     throw error;
   } finally {
@@ -269,10 +241,10 @@ async function connect(info) {
   }
 }
 
-function drain(dc, signal) {
+function drain(dc: RTCDataChannel, signal: AbortSignal): Promise<void> {
   if (dc.readyState !== 'open') return Promise.reject(new Error('Disconnected'));
   if (dc.bufferedAmount <= 65536) return Promise.resolve();
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
       clearTimeout(timer);
       dc.removeEventListener('bufferedamountlow', low);
@@ -290,20 +262,20 @@ function drain(dc, signal) {
   });
 }
 
-async function request(action, fields = {}, payload, progress) {
+async function request(action: RequestAction, fields: RequestFields = {}, payload?: Blob, progress?: TransferProgress): Promise<Blob> {
   if (!session?.ready) throw new Error('Scan the QR first.');
   const pc = session.pc;
   const dc = pc.createDataChannel('request', { ordered: true });
   dc.binaryType = 'arraybuffer';
   dc.bufferedAmountLowThreshold = 65536;
   const abort = new AbortController();
-  let header;
+  let header: ResponseHeader | undefined;
   let received = 0;
   let finished = false;
-  let timer;
-  const chunks = [];
-  const response = new Promise((resolve, reject) => {
-    const fail = error => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const chunks: ArrayBuffer[] = [];
+  const response = new Promise<Blob>((resolve, reject) => {
+    const fail = (error: unknown) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
@@ -322,12 +294,14 @@ async function request(action, fields = {}, payload, progress) {
       try {
         reset();
         if (typeof event.data === 'string') {
-          const message = JSON.parse(event.data);
+          const message: unknown = JSON.parse(event.data);
+          if (!isRecord(message)) throw new Error('Invalid response');
           if (message.type === 'response') {
-            if (header || !Number.isInteger(message.status) || !Number.isInteger(message.size) || message.size > 1024 ** 3) throw new Error('Invalid response');
-            header = message;
+            if (header || typeof message.status !== 'number' || !Number.isInteger(message.status) ||
+              typeof message.size !== 'number' || !Number.isInteger(message.size) || message.size < -1 || message.size > 1024 ** 3) throw new Error('Invalid response');
+            header = { status: message.status, size: message.size };
           } else if (message.type === 'error') {
-            throw new Error(message.message || 'Transfer failed');
+            throw new Error(typeof message.message === 'string' && message.message || 'Transfer failed');
           } else if (message.type === 'end') {
             if (!header || header.size >= 0 && received !== header.size) throw new Error('Incomplete file');
             const body = new Blob(chunks);
@@ -369,27 +343,30 @@ async function request(action, fields = {}, payload, progress) {
   return response;
 }
 
-async function busy(button, action) {
+async function busy(button: HTMLButtonElement, action: () => Promise<void>) {
   active++;
   button.disabled = true;
   scanButton.disabled = true;
   renderPairs();
-  try { await action(); status.textContent = 'Done'; }
-  catch (error) { status.textContent = error.message || 'Transfer failed'; }
+  try { await action(); statusElement.textContent = 'Done'; }
+  catch (error) { statusElement.textContent = errorMessage(error) || 'Transfer failed'; }
   finally { active--; button.disabled = false; scanButton.disabled = active > 0; renderPairs(); }
 }
 
-function progress(label) {
+function progress(label: string): TransferProgress {
   return (done, total) => {
-    status.textContent = label + (total > 0 ? ' · ' + Math.min(100, Math.floor(done * 100 / total)) + '%' : '');
+    statusElement.textContent = label + (total > 0 ? ' · ' + Math.min(100, Math.floor(done * 100 / total)) + '%' : '');
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '';
 }
 
 async function listItems() {
   const response = await request('list');
-  const items = JSON.parse(await response.text());
-  if (!Array.isArray(items)) throw new Error('Invalid file list');
-  const root = document.getElementById('items');
+  const items = validateItems(JSON.parse(await response.text()));
+  const root = document.getElementById('items')!;
   root.replaceChildren();
   for (const item of items) {
     const row = document.createElement('article');
@@ -413,19 +390,20 @@ async function listItems() {
     }));
     row.append(download);
     if (typeof item.text === 'string') {
+      const text = item.text;
       const field = document.createElement('textarea');
       field.readOnly = true;
-      field.value = item.text;
+      field.value = text;
       field.setAttribute('aria-label', 'Content');
       const copy = document.createElement('button');
       copy.textContent = 'Copy';
       copy.addEventListener('click', async () => {
-        try { await navigator.clipboard.writeText(item.text); status.textContent = 'Copied'; }
-        catch { field.focus(); field.select(); status.textContent = 'Select and copy the text.'; }
+        try { await navigator.clipboard.writeText(text); statusElement.textContent = 'Copied'; }
+        catch { field.focus(); field.select(); statusElement.textContent = 'Select and copy the text.'; }
       });
       row.append(field, copy);
       try {
-        const url = new URL(item.text.trim());
+        const url = new URL(text.trim());
         if (url.protocol === 'https:' || url.protocol === 'http:') {
           const open = document.createElement('a');
           open.className = 'button';
@@ -445,8 +423,8 @@ function stopCamera() {
   scanning = false;
   camera?.getTracks().forEach(track => track.stop());
   camera = undefined;
-  document.querySelector('video').srcObject = null;
-  document.getElementById('camera').hidden = true;
+  document.querySelector('video')!.srcObject = null;
+  document.getElementById('camera')!.hidden = true;
 }
 
 scanButton.addEventListener('click', async () => {
@@ -455,12 +433,13 @@ scanButton.addEventListener('click', async () => {
     scanning = true;
     camera = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 960 } }, audio: false });
     if (!scanning) { stopCamera(); return; }
-    const video = document.querySelector('video');
+    const video = document.querySelector('video')!;
     video.srcObject = camera;
-    document.getElementById('camera').hidden = false;
+    document.getElementById('camera')!.hidden = false;
     await video.play();
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('Could not open camera');
     while (scanning) {
       if (video.readyState >= 2 && video.videoWidth) {
         canvas.width = Math.min(960, video.videoWidth);
@@ -470,32 +449,34 @@ scanButton.addEventListener('click', async () => {
         const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'dontInvert' });
         if (code) {
           let info;
-          try { info = invitation(code.data); } catch { status.textContent = 'Scan an Orbit Share QR.'; }
+          try { info = invitation(code.data); } catch { statusElement.textContent = 'Scan an Orbit Share QR.'; }
           if (info) { stopCamera(); await connect(info); break; }
         }
       }
       await new Promise(resolve => setTimeout(resolve, 120));
     }
-  } catch (error) { stopCamera(); status.textContent = error.message || 'Could not open camera'; }
+  } catch (error) { stopCamera(); statusElement.textContent = errorMessage(error) || 'Could not open camera'; }
 });
-document.getElementById('cancel-scan').addEventListener('click', stopCamera);
+document.getElementById('cancel-scan')!.addEventListener('click', stopCamera);
 
-document.getElementById('files').addEventListener('submit', event => {
+document.querySelector<HTMLFormElement>('#files')!.addEventListener('submit', event => {
   event.preventDefault();
   const form = event.currentTarget;
-  busy(form.querySelector('button'), async () => {
-    for (const file of document.getElementById('upload').files) {
+  if (!(form instanceof HTMLFormElement)) return;
+  busy(form.querySelector('button')!, async () => {
+    for (const file of document.querySelector<HTMLInputElement>('#upload')!.files ?? []) {
       if (file.size > 1024 ** 3) throw new Error('File exceeds 1 GiB.');
       await request('upload', { name: file.name }, file, progress('Uploading'));
     }
     form.reset();
   });
 });
-document.getElementById('text').addEventListener('submit', event => {
+document.querySelector<HTMLFormElement>('#text')!.addEventListener('submit', event => {
   event.preventDefault();
   const form = event.currentTarget;
-  busy(form.querySelector('button'), async () => {
-    const value = document.getElementById('message').value;
+  if (!(form instanceof HTMLFormElement)) return;
+  busy(form.querySelector('button')!, async () => {
+    const value = document.querySelector<HTMLTextAreaElement>('#message')!.value;
     const payload = new Blob([value], { type: 'text/plain;charset=utf-8' });
     if (!value.trim()) throw new Error('Enter text.');
     if (payload.size > 1024 * 1024) throw new Error('Text exceeds 1 MiB.');
@@ -507,34 +488,37 @@ window.addEventListener('pagehide', () => { stopCamera(); session?.pc.close(); }
 window.addEventListener('beforeinstallprompt', event => {
   event.preventDefault();
   installPrompt = event;
-  document.getElementById('install').hidden = false;
+  document.querySelector<HTMLButtonElement>('#install')!.hidden = false;
 });
-document.getElementById('install').addEventListener('click', async () => {
+document.querySelector<HTMLButtonElement>('#install')!.addEventListener('click', async () => {
   await installPrompt?.prompt();
   installPrompt = undefined;
-  document.getElementById('install').hidden = true;
+  document.querySelector<HTMLButtonElement>('#install')!.hidden = true;
 });
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready).then(() => {
-    document.getElementById('offline').textContent = matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 'Ready offline' : 'Ready offline · Add to Home Screen';
-  }).catch(() => { document.getElementById('offline').textContent = 'Offline setup failed. Reload to retry.'; });
+    document.getElementById('offline')!.textContent = matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 'Ready offline' : 'Ready offline · Add to Home Screen';
+  }).catch(() => { document.getElementById('offline')!.textContent = 'Offline setup failed. Reload to retry.'; });
 }
 async function start() {
-  let initial;
+  let initial: DeviceInfo | undefined;
   if (location.hash) {
     try { initial = invitation(location.href); }
-    catch (error) { status.textContent = error.message; }
+    catch (error) { statusElement.textContent = errorMessage(error); }
     history.replaceState(null, '', location.pathname);
   }
   try {
     const saved = await pairStore('list');
-    pairs = saved.filter(info => {
-      try { return Boolean(info.key && validateInfo(info)); } catch { return false; }
-    }).sort((a, b) => (b.last || 0) - (a.last || 0));
+    pairs = saved.flatMap(value => {
+      try {
+        const info = validateInfo(value);
+        return info.key ? [info] : [];
+      } catch { return []; }
+    }).sort((a, b) => b.last - a.last);
     renderPairs();
   } catch {}
   if (session || scanning) return;
   const info = initial || pairs[0];
   if (info) await connect(info);
 }
-start().catch(error => { status.textContent = error.message; });
+start().catch(error => { statusElement.textContent = errorMessage(error); });

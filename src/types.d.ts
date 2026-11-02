@@ -1,0 +1,70 @@
+interface PeerAddress {
+  host: string;
+  port: number;
+  fingerprint: string;
+  mdns?: string;
+}
+
+interface Invitation extends PeerAddress {
+  token: string;
+  key?: never;
+  id?: never;
+}
+
+interface PairedDevice extends PeerAddress {
+  id: string;
+  key: CryptoKey;
+  name: string;
+  last: number;
+  token?: never;
+}
+
+type DeviceInfo = Invitation | PairedDevice;
+
+interface ShareSession {
+  pc: RTCPeerConnection;
+  control: RTCDataChannel;
+  info: DeviceInfo;
+  ready: boolean;
+  forgotten?: boolean;
+  error?: string;
+  name?: Promise<string>;
+}
+
+type RequestAction = 'list' | 'file' | 'upload' | 'text';
+interface RequestFields {
+  index?: number;
+  name?: string;
+}
+type TransferProgress = (done: number, total: number) => void;
+interface ResponseHeader {
+  status: number;
+  size: number;
+}
+
+interface SharedItem {
+  index: number;
+  name: string;
+  size: number | null;
+  text?: string;
+}
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt(): Promise<unknown>;
+}
+interface WindowEventMap {
+  beforeinstallprompt: BeforeInstallPromptEvent;
+}
+interface Navigator {
+  readonly standalone?: boolean;
+  readonly userAgentData?: {
+    getHighEntropyValues(hints: string[]): Promise<{ model?: string }>;
+  };
+}
+
+declare function jsQR(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  options: { inversionAttempts: 'dontInvert' },
+): { data: string } | null;

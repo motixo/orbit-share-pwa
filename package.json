@@ -1,0 +1,12 @@
+{
+  "name": "orbit-share-pwa",
+  "private": true,
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.sw.json",
+    "build": "node scripts/build.mjs && tsc -p tsconfig.json && tsc -p tsconfig.sw.json",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}
