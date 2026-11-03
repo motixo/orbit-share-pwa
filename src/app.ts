@@ -515,7 +515,7 @@ async function downloadSink(): Promise<DownloadSink & { save(name: string): void
       if (stopped || !file) throw new Error('Download unavailable');
       const link = document.createElement('a');
       link.href = '/downloads/' + file.name + '/' + encodeURIComponent(name);
-      link.download = name;
+      // Download attributes bypass the service worker in Chromium.
       document.body.append(link);
       try { link.click(); } finally { link.remove(); }
       stopped = true;
