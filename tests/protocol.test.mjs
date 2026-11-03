@@ -7,7 +7,7 @@ import { runInNewContext } from 'node:vm';
 const { invitation, validateInfo, validateItems } = runInNewContext(
   readFileSync(new URL('../dist/protocol.js', import.meta.url), 'utf8') +
     '\n({ invitation, validateInfo, validateItems })',
-  { CryptoKey: webcrypto.CryptoKey, URL, atob, Uint8Array, location: { origin: 'https://share.example' } },
+  { CryptoKey: globalThis.CryptoKey, URL, atob, Uint8Array, location: { origin: 'https://share.example' } },
 );
 const address = { share: '12345678-1234-4123-8123-123456789abc', host: '192.168.1.2', port: 49152, fingerprint: Array(32).fill('00').join(':') };
 const token = 'ab'.repeat(32);
