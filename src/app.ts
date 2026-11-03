@@ -42,7 +42,6 @@ function resumeConnection() {
   const current = session;
   if (!current || current.forgotten || !current.retry || current.connecting || pageClosed || scanning) return;
   if (current.ready && current.control.readyState === 'open') {
-    current.lastSeen = performance.now();
     try { current.control.send('ping'); } catch { disconnected(current); }
     void refreshItems(current);
   } else {
@@ -834,6 +833,7 @@ window.addEventListener('pagehide', () => {
 });
 window.addEventListener('pageshow', () => { pageClosed = false; resumeConnection(); });
 window.addEventListener('online', resumeConnection);
+navigator.connection?.addEventListener('change', resumeConnection);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') resumeConnection();
 });

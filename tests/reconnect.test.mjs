@@ -128,6 +128,25 @@ test('returning to the app probes live connections and immediately retries disco
   assert.equal(attempts, 1);
 });
 
+test('network probes preserve the last response time and respect disabled retries', () => {
+  const { app, current } = connection();
+  let probes = 0;
+  current.control.send = message => { assert.equal(message, 'ping'); probes++; };
+  current.lastSeen = 50;
+  app.resume();
+  app.resume();
+  assert.equal(current.lastSeen, 50);
+  assert.equal(probes, 2);
+  current.retry = false;
+  app.resume();
+  assert.equal(probes, 2);
+  current.ready = false;
+  let attempts = 0;
+  app.attempt(() => { attempts++; });
+  app.resume();
+  assert.equal(attempts, 0);
+});
+
 test('file updates coalesce while a list is loading and retry without reconnecting', async () => {
   const { app, current, timers } = connection();
   let finish;

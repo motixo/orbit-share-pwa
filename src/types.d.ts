@@ -71,6 +71,7 @@ interface WindowEventMap {
   beforeinstallprompt: BeforeInstallPromptEvent;
 }
 interface Navigator {
+  readonly connection?: EventTarget;
   readonly standalone?: boolean;
   readonly userAgentData?: {
     getHighEntropyValues(hints: string[]): Promise<{ model?: string }>;
