@@ -410,7 +410,7 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
     document.getElementById('pair-help')!.hidden = false;
     document.getElementById('use-link')!.textContent = 'Use a connection link';
     document.getElementById('use-link')!.setAttribute('aria-expanded', 'false');
-    statusElement.textContent = 'Connected';
+    statusElement.textContent = '';
   } catch (error) {
     if (session !== current) return;
     current.error = errorMessage(error);
