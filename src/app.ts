@@ -387,7 +387,7 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
       'c=IN IP4 ' + info.host, 'a=mid:0', 'a=ice-options:ice2',
       'a=ice-ufrag:' + credentials, 'a=ice-pwd:' + credentials,
       'a=fingerprint:sha-256 ' + info.fingerprint, 'a=setup:passive',
-      'a=sctp-port:5000', 'a=max-message-size:16384',
+      'a=sctp-port:5000', 'a=max-message-size:65536',
       ...(info.mdns ? ['a=candidate:2 1 UDP 2 ' + info.mdns + ' ' + info.port + ' typ host'] : []),
       'a=candidate:1 1 UDP 1 ' + info.host + ' ' + info.port + ' typ host', 'a=end-of-candidates', '',
     ].join('\r\n');

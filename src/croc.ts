@@ -2,7 +2,7 @@ import { prepareFiles, sendFiles, receiveFiles } from 'croc-sdk/client';
 import { hashFileContents } from 'croc-sdk/hash';
 import type { PreparedFile } from 'croc-sdk/types';
 import { route } from './croc-socket';
-import { startUploadHash } from './croc-hash';
+import { startHash, startUploadHash } from './croc-hash';
 import type { CrocTicket, DownloadSink } from './transfer-types';
 
 export async function prepare(payload: Blob, name: string, signal: AbortSignal): Promise<PreparedFile[]> {
@@ -32,6 +32,7 @@ export async function transfer(
   const options = { secret: ticket.secret, settings, signal };
   const onProgress = (value: { totalBytes: number; totalSize: number }) => progress(value.totalBytes, value.totalSize);
   signal.addEventListener('abort', dispose, { once: true });
+  let downloadHash: Awaited<ReturnType<typeof startHash>> | undefined;
   try {
     if (prepared) {
       if (ticket.verify !== true || prepared.length !== 1) throw new Error('Streaming upload unavailable');
@@ -44,6 +45,7 @@ export async function transfer(
     }
     if (!sink) throw new Error('Download storage unavailable');
     let result: File | undefined;
+    let digest: Uint8Array | undefined;
     let writes = Promise.resolve();
     await receiveFiles({ ...options, callbacks: {
       onProgress,
@@ -51,18 +53,26 @@ export async function transfer(
         if (offer.kind !== 'files' || offer.files.length !== 1 || offer.emptyFolders.length ||
           offer.files[0].size !== ticket.size) return false;
         await sink.prepare(ticket.size);
+        downloadHash = await startHash(ticket.size, signal);
         return {
           async createEmptyFolder() { throw new Error('Unexpected folder'); },
           async openFile() {
             return {
               async writeAt(position, bytes) {
                 const data = bytes.slice().buffer;
-                writes = writes.then(() => sink.writeAt(position, data));
+                writes = writes.then(async () => {
+                  await downloadHash!.writeAt(position, new Uint8Array(data));
+                  await sink.writeAt(position, data);
+                });
                 await writes;
               },
-              async finalize() { await writes; result = await sink.finish(); },
+              async finalize() {
+                await writes;
+                [digest, result] = await Promise.all([downloadHash!.finish(), sink.finish()]);
+              },
               async hash(algorithm = 'xxhash', hashingSignal) {
                 if (!result) throw new Error('Incomplete file');
+                if (algorithm === 'xxhash' && digest) return digest;
                 return hashFileContents(result, algorithm, hashingSignal);
               },
               async abort() { sink.abort(); },
@@ -75,6 +85,7 @@ export async function transfer(
     if (!result) throw new Error('Incomplete file');
     return result;
   } finally {
+    await downloadHash?.close();
     signal.removeEventListener('abort', dispose);
     dispose();
   }

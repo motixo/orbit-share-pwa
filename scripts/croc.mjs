@@ -38,8 +38,26 @@ const plugin = {
       let contents = await readFile(args.path, 'utf8');
       const before = 'const plain = new Uint8Array(8 + data.byteLength);';
       if (contents.split(before).length !== 2) throw new Error('Croc upload adapter needs updating');
-      contents = `import { hashUploadChunk } from ${JSON.stringify(resolve('src/croc-hash.ts'))};\n` +
-        contents.replace(before, `await hashUploadChunk(prepared.file, position, data);\n${before}`);
+      const read = `const data = new Uint8Array(
+          await prepared.file
+            .slice(position, position + CHUNK_SIZE)
+            .arrayBuffer(),
+        );`;
+      if (contents.split(read).length !== 2) throw new Error('Croc upload reader needs updating');
+      const sample = `let compressed = false;
+    if (file.size > 0) {
+      const sample = new Uint8Array(
+        await file.slice(0, Math.min(file.size, 256 << 10)).arrayBuffer(),
+      );
+      const compressedSample = await protocolEngine().compress(sample);
+      compressed = compressedSample.byteLength * 100 < sample.byteLength * 98;
+    }`;
+      if (contents.split(sample).length !== 2) throw new Error('Croc compression probe needs updating');
+      contents = `import { shouldCompress } from ${JSON.stringify(resolve('src/croc-compression.ts'))};\n` +
+        contents.replace(sample, 'const compressed = await shouldCompress(file, signal);');
+      contents = `import { hashUploadChunk, readUploadChunk } from ${JSON.stringify(resolve('src/croc-hash.ts'))};\n` +
+        contents.replace(read, 'const data = await readUploadChunk(prepared.file, position, CHUNK_SIZE);');
+      contents = contents.replace(before, `await hashUploadChunk(prepared.file, position, data);\n${before}`);
       return { contents, loader: 'ts', resolveDir: resolve(args.path, '..') };
     });
     bundler.onLoad({ filter: /\/protocol\/transport\.ts$/ }, async args => {
@@ -69,7 +87,7 @@ await writeFile(config, JSON.stringify({
       'lossless-json': [resolve('node_modules/lossless-json')],
     },
   },
-  files: ['src/croc.ts', 'src/croc-socket.ts', 'src/croc-types.d.ts'].map(file => resolve(file)),
+  files: ['src/croc.ts', 'src/croc-socket.ts', 'src/croc-compression.ts', 'src/croc-types.d.ts'].map(file => resolve(file)),
 }));
 execFileSync(process.execPath, ['node_modules/typescript/bin/tsc', '-p', config], { stdio: 'inherit' });
 await build({ ...options, entryPoints: ['src/croc.ts'], outfile: 'dist/croc.js', format: 'iife', globalName: 'OrbitCroc', inject: [resolve('src/croc-socket.ts')] });

@@ -33,7 +33,7 @@ export class WebSocket extends EventTarget {
     if (!entry || !port || !/^\d{1,5}$/.test(port)) throw new Error('Unknown croc transfer');
     this.dc = entry.pc.createDataChannel(`croc:${id}:${port}`, { ordered: true });
     this.dc.binaryType = 'arraybuffer';
-    this.dc.bufferedAmountLowThreshold = 65536;
+    this.dc.bufferedAmountLowThreshold = 512 * 1024;
     entry.sockets.add(this);
     this.timer = setTimeout(() => this.fail(), 15000);
     this.dc.addEventListener('open', () => { this.opened = true; clearTimeout(this.timer); this.dispatchEvent(new Event('open')); });
@@ -64,15 +64,28 @@ export class WebSocket extends EventTarget {
     this.queued += data.byteLength;
     this.tail = this.tail.then(async () => {
       for (let offset = 0; offset < data.byteLength; offset += 16384) {
-        while (this.dc.bufferedAmount > 256 * 1024 && this.readyState === WebSocket.OPEN) {
-          await new Promise(resolve => setTimeout(resolve, 5));
-        }
+        if (this.dc.bufferedAmount > 1024 * 1024) await this.drain();
         if (this.readyState !== WebSocket.OPEN) throw new Error('Disconnected');
         const chunk = data.slice(offset, offset + 16384);
         this.dc.send(chunk);
         this.queued -= chunk.byteLength;
       }
     }).catch(() => this.fail());
+  }
+
+  private drain(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const finish = () => {
+        clearTimeout(timer);
+        this.dc.removeEventListener('bufferedamountlow', finish);
+        this.dc.removeEventListener('close', finish);
+        this.readyState === WebSocket.OPEN ? resolve() : reject(new Error('Disconnected'));
+      };
+      const timer = setTimeout(() => { this.fail(); finish(); }, 60000);
+      this.dc.addEventListener('bufferedamountlow', finish, { once: true });
+      this.dc.addEventListener('close', finish, { once: true });
+      if (this.dc.bufferedAmount <= this.dc.bufferedAmountLowThreshold || this.readyState !== WebSocket.OPEN) finish();
+    });
   }
 
   private fail() {
