@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 
-function crocRequest(transfer) {
+function crocRequest(transfer, clock = performance) {
   const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
   const begin = source.indexOf('async function request(');
   const end = source.indexOf('async function requestControl(', begin);
@@ -12,7 +12,7 @@ function crocRequest(transfer) {
   const current = { ready: true, pc: {}, control: Object.assign(new EventTarget(), { readyState: 'open', send() {} }) };
   const prepared = [{ hash: Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8) }];
   const { request } = runInNewContext(source.slice(begin, end) + '\n({ request })', {
-    session: current, AbortController, performance, statusElement: {},
+    session: current, AbortController, performance: clock, statusElement: {},
     OrbitCroc: { async prepare() { return prepared; }, transfer },
     async requestControl(action, fields) {
       commands.push({ action, fields });
@@ -59,6 +59,20 @@ test('Croc uploads submit their checksum and cancel failures without falling bac
     if (!fail) assert.equal(commands[1].fields.checksum, '0102030405060708');
     assert.equal(aborted.aborted, true);
   }
+});
+
+test('transfer progress updates are throttled without skipping completion', async () => {
+  let time = 0;
+  const updates = [];
+  const { request } = crocRequest(async (pc, ticket, signal, report) => {
+    for (const [done, now] of [[1, 0], [2, 100], [3, 250], [4, 300], [5, 500], [6, 501]]) {
+      time = now;
+      report(done, 6);
+    }
+    return new Blob();
+  }, { now: () => time });
+  await request('file', {}, undefined, (done, total) => updates.push([done, total]));
+  assert.deepEqual(updates, [[3, 6], [5, 6], [6, 6]]);
 });
 
 test('disk downloads tolerate missing estimates and clean up partial files', async () => {
@@ -120,6 +134,50 @@ test('finalized downloads can still be aborted before they are saved', async () 
   assert.equal(writer.terminated, undefined);
   sink.abort();
   assert.deepEqual(writer.commands, ['open', 'finish', 'abort']);
+});
+
+test('download writes batch small chunks and flush tails and nonsequential positions before finalizing', async () => {
+  const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
+  const begin = source.indexOf('async function downloadSink(');
+  const end = source.indexOf('\nfunction pumpRequests(', begin);
+  const writes = [];
+  const file = new File([], 'download');
+  const batch = 1024 * 1024;
+  let lastWrite;
+  let finalized = false;
+  class Worker {
+    postMessage(message) {
+      if (message.type === 'write') writes.push({ position: message.position, bytes: new Uint8Array(message.data).slice() });
+      if (message.type === 'write' && message.data.byteLength === 1) {
+        lastWrite = () => this.onmessage({ data: {} });
+        return;
+      }
+      if (message.type === 'finish') {
+        finalized = true;
+        assert.deepEqual(writes.map(write => [write.position, write.bytes.length]), [[0, batch], [batch, 3], [0, 1]]);
+      }
+      queueMicrotask(() => this.onmessage({ data: message.type === 'finish' ? { file } : {} }));
+    }
+    terminate() {}
+  }
+  const { downloadSink } = runInNewContext(source.slice(begin, end) + '\n({ downloadSink })', {
+    Worker, downloadReady: Promise.resolve(), setTimeout, clearTimeout,
+  });
+  const sink = await downloadSink();
+  for (let index = 0; index < 32; index++) {
+    await sink.writeAt(index * 32768, new Uint8Array(32768).fill(index).buffer);
+    assert.equal(writes.length, index === 31 ? 1 : 0);
+  }
+  await sink.writeAt(batch, Uint8Array.of(1, 2, 3).buffer);
+  await sink.writeAt(0, Uint8Array.of(9).buffer);
+  const finishing = sink.finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof lastWrite, 'function');
+  assert.equal(finalized, false);
+  lastWrite();
+  assert.equal(await finishing, file);
+  assert.deepEqual(Array.from(writes[1].bytes), [1, 2, 3]);
+  assert.equal(writes[0].bytes[batch - 1], 31);
 });
 
 test('saved downloads preserve media names and types and remove temporary files after completion or cancellation', async () => {

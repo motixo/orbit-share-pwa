@@ -1,5 +1,5 @@
 const worker: ServiceWorkerGlobalScope = self as typeof self & ServiceWorkerGlobalScope;
-const CACHE = 'orbit-share-v33';
+const CACHE = 'orbit-share-v34';
 const development = ['localhost', '127.0.0.1', '[::1]'].includes(worker.location.hostname);
 const FILES = ['/', '/index.html', '/style.css', '/app.js', '/download-worker.js', '/protocol.js', '/croc.js', '/croc-engine-worker.js', '/croc-sha256-worker.js', '/vendor/jsQR.js', '/icon.svg', '/icon-192.png', '/icon-512.png', '/manifest.json'];
 worker.addEventListener('install', event => {

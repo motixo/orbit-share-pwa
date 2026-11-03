@@ -448,6 +448,11 @@ async function downloadSink(): Promise<DownloadSink & { save(name: string): void
   const writer = new Worker('/download-worker.js', { type: 'module' });
   let stopped = false;
   let file: File | undefined;
+  let buffered: Uint8Array<ArrayBuffer> | undefined;
+  let bufferedSize = 0;
+  let bufferedPosition = 0;
+  let writing = Promise.resolve();
+  const batchSize = 1024 * 1024;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let pending: { resolve(value: File | undefined): void; reject(error: Error): void } | undefined;
   writer.onmessage = event => {
@@ -464,8 +469,20 @@ async function downloadSink(): Promise<DownloadSink & { save(name: string): void
     timeout = setTimeout(() => { reject(new Error('Saving download timed out')); abort(); }, 60000);
     writer.postMessage({ type, data, size, position }, data ? [data] : []);
   });
+  const flush = async () => {
+    if (!buffered || !bufferedSize) return;
+    await writing;
+    const data = bufferedSize === buffered.byteLength ? buffered.buffer : buffered.slice(0, bufferedSize).buffer;
+    buffered = undefined;
+    bufferedSize = 0;
+    writing = command('write', data, undefined, bufferedPosition).then(() => {});
+    // The next batch can fill while this write runs; finish still awaits errors.
+    void writing.catch(() => {});
+  };
   const abort = () => {
     if (stopped) return;
+    buffered = undefined;
+    bufferedSize = 0;
     clearTimeout(timeout);
     pending?.reject(new Error('Download cancelled'));
     pending = undefined;
@@ -478,8 +495,18 @@ async function downloadSink(): Promise<DownloadSink & { save(name: string): void
   catch (error) { abort(); throw error; }
   return {
     async prepare(size) { await command('prepare', undefined, size); },
-    async writeAt(position, data) { await command('write', data, undefined, position); },
+    async writeAt(position, data) {
+      if (stopped) throw new Error('Download cancelled');
+      if (buffered && (position !== bufferedPosition + bufferedSize || bufferedSize + data.byteLength > batchSize)) await flush();
+      if (data.byteLength >= batchSize) { await writing; await command('write', data, undefined, position); return; }
+      if (!buffered) { buffered = new Uint8Array(batchSize); bufferedPosition = position; }
+      buffered.set(new Uint8Array(data), bufferedSize);
+      bufferedSize += data.byteLength;
+      if (bufferedSize === batchSize) await flush();
+    },
     async finish() {
+      await flush();
+      await writing;
       file = await command('finish');
       if (!file) throw new Error('Could not save download');
       return file;
@@ -551,9 +578,9 @@ async function request(action: RequestAction, fields: RequestFields = {}, payloa
     if (!ticket || session !== current || !current.ready) throw new Error('Disconnected');
     let sampled = 0;
     const report: TransferProgress = (done, total) => {
-      progress?.(done, total);
       if (performance.now() - sampled < 250 && done < total) return;
       sampled = performance.now();
+      progress?.(done, total);
       if (current.control.readyState === 'open') current.control.send(JSON.stringify({ type: 'croc-progress', id: ticket!.id, done }));
     };
     const result = await OrbitCroc.transfer(current.pc, ticket, abort.signal, report, prepared, sink);
