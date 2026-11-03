@@ -40,6 +40,7 @@ header:has(#scan:not([hidden])) { margin-bottom: 0; }
 #connection-bar { display: flex; align-items: center; gap: .375rem; flex: none; margin-bottom: 1rem; }
 #connected-device { flex: 1; min-width: 0; margin: 0; font-size: .8125rem; opacity: .7; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #connection-bar button { flex: none; margin: 0; padding: .375rem .5rem; font-size: .75rem; }
+#disconnect { color: light-dark(#b42318, #ffb4ab); }
 #items { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: .5rem; border: 1px solid light-dark(#ddd, #383838); border-radius: .75rem; background: light-dark(#fff, #080808); }
 #items:empty::after { content: 'No items'; display: block; padding: 2rem 1rem; text-align: center; opacity: .6; }
 #items.dragging { border-color: #78a9ef; background: light-dark(#e5f0ff, #172536); outline: 2px solid #78a9ef; outline-offset: -2px; }
