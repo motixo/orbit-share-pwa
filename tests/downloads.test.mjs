@@ -122,10 +122,16 @@ test('finalized downloads can still be aborted before they are saved', async () 
   assert.deepEqual(writer.commands, ['open', 'finish', 'abort']);
 });
 
-test('saved downloads stream from disk and delete their temporary file after completion or cancellation', async () => {
+test('saved downloads preserve media names and types and remove temporary files after completion or cancellation', async () => {
   const source = readFileSync(new URL('../dist/sw.js', import.meta.url), 'utf8');
   const id = '12345678-1234-4123-8123-123456789abc';
-  for (const cancel of [false, true]) {
+  for (const [name, type, fallback, cancel] of [
+    ['IMG_0228.mov', 'video/quicktime', 'IMG_0228.mov', false],
+    ['Screenshot.PNG', 'image/png', 'Screenshot.PNG', false],
+    ['عکس.png', 'image/png', '___.png', false],
+    ['unknown.bin', 'application/octet-stream', 'unknown.bin', false],
+    ['photo.png', 'image/png', 'photo.png', true],
+  ]) {
     let fetchHandler, response, lifetime, removed = false;
     const directory = {
       async getFileHandle(name) { assert.equal(name, id); return { async getFile() { return new File(['content'], id); } }; },
@@ -140,13 +146,14 @@ test('saved downloads stream from disk and delete their temporary file after com
       navigator: { storage: { async getDirectory() { return { async getDirectoryHandle() { return directory; } }; } } },
     });
     fetchHandler({
-      request: { url: 'https://share.example/downloads/' + id + '?name=note.txt', method: 'GET' },
+      request: { url: 'https://share.example/downloads/' + id + '/' + encodeURIComponent(name), method: 'GET' },
       respondWith(value) { response = value; }, waitUntil(value) { lifetime = value; },
     });
     const download = await response;
     assert.equal(removed, false);
     assert.equal(download.headers.get('Content-Length'), '7');
-    assert.match(download.headers.get('Content-Disposition'), /note.txt/);
+    assert.equal(download.headers.get('Content-Type'), type);
+    assert.equal(download.headers.get('Content-Disposition'), `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`);
     if (cancel) await download.body.cancel();
     else assert.equal(await download.text(), 'content');
     await lifetime;

@@ -487,7 +487,7 @@ async function downloadSink(): Promise<DownloadSink & { save(name: string): void
     save(name) {
       if (stopped || !file) throw new Error('Download unavailable');
       const link = document.createElement('a');
-      link.href = '/downloads/' + file.name + '?name=' + encodeURIComponent(name);
+      link.href = '/downloads/' + file.name + '/' + encodeURIComponent(name);
       link.download = name;
       document.body.append(link);
       try { link.click(); } finally { link.remove(); }
