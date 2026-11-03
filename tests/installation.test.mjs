@@ -95,7 +95,6 @@ test('browser users choose the share page while installed apps and invitations o
     [{}, false],
     [{ search: '?view=other' }, false],
     [{ search: '?view=share' }, true],
-    [{ search: '?preview=1' }, true],
     [{ hash: '#invitation' }, true],
     [{ standalone: true }, true],
   ]) {

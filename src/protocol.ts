@@ -8,20 +8,17 @@ function invitation(value: string): DeviceInfo {
   const url = new URL(value);
   if (url.origin !== location.origin || url.hash.length > 2048) throw new Error('Invalid QR');
   const data = atob(url.hash.slice(1).replace(/-/g, '+').replace(/_/g, '/'));
-  let info: unknown;
-  if (data.charCodeAt(0) === 1) {
-    if (data.length !== 71) throw new Error('Invalid QR');
-    const bytes = Uint8Array.from(data, char => char.charCodeAt(0));
-    const hex = (bytes: Uint8Array) => Array.from(bytes, byte => byte.toString(16).padStart(2, '0'));
-    info = {
-      host: Array.from(bytes.slice(1, 5)).join('.'),
-      port: bytes[5] * 256 + bytes[6],
-      fingerprint: hex(bytes.slice(7, 39)).join(':'),
-      token: hex(bytes.slice(39)).join(''),
-    };
-  } else {
-    info = JSON.parse(data);
-  }
+  if (data.charCodeAt(0) !== 2 || data.length !== 87) throw new Error('Invalid QR');
+  const bytes = Uint8Array.from(data, char => char.charCodeAt(0));
+  const hex = (bytes: Uint8Array) => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  const id = hex(bytes.slice(71));
+  const info = {
+    host: Array.from(bytes.slice(1, 5)).join('.'),
+    port: bytes[5] * 256 + bytes[6],
+    fingerprint: hex(bytes.slice(7, 39)).match(/../g)!.join(':'),
+    token: hex(bytes.slice(39, 71)),
+    share: `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`,
+  };
   return validateInfo(info);
 }
 
@@ -31,11 +28,12 @@ function validateInfo(value: unknown): DeviceInfo {
   if (octets.some(n => n > 255) || !(octets[0] === 10 || octets[0] === 192 && octets[1] === 168 ||
     octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31 || octets[0] === 169 && octets[1] === 254)) throw new Error('Local network required');
   if (typeof value.port !== 'number' || !Number.isInteger(value.port) || value.port < 1 || value.port > 65535 ||
+    typeof value.share !== 'string' || !deviceID.test(value.share) ||
     typeof value.fingerprint !== 'string' || !/^(?:[0-9a-f]{2}:){31}[0-9a-f]{2}$/i.test(value.fingerprint)) throw new Error('Invalid QR');
   if (value.mdns !== undefined && (typeof value.mdns !== 'string' || value.mdns !== '' &&
     (!value.mdns.endsWith('.local') || !deviceID.test(value.mdns.slice(0, -6))))) throw new Error('Invalid device');
   const address: PeerAddress = {
-    host: value.host, port: value.port, fingerprint: value.fingerprint.toUpperCase(),
+    host: value.host, port: value.port, share: value.share, fingerprint: value.fingerprint.toUpperCase(),
     mdns: typeof value.mdns === 'string' ? value.mdns : undefined,
   };
   if (value.key) {
@@ -59,21 +57,15 @@ function validateItems(value: unknown): SharedItem[] {
       typeof item.name !== 'string' || item.size !== null && (typeof item.size !== 'number' ||
         !Number.isSafeInteger(item.size) || item.size < 0) ||
       item.text != null && typeof item.text !== 'string' ||
-      item.filename !== undefined && typeof item.filename !== 'string' ||
-      item.downloadable !== undefined && typeof item.downloadable !== 'boolean' ||
-      item.source !== undefined && item.source !== 'desktop' && item.source !== 'mobile' ||
-      item.sender !== undefined && typeof item.sender !== 'string' ||
-      item.removable !== undefined && typeof item.removable !== 'boolean' ||
-      item.kind !== undefined && (typeof item.kind !== 'string' || !['file', 'text', 'link', 'image', 'video'].includes(item.kind))) throw new Error('Invalid file list');
+      typeof item.filename !== 'string' || typeof item.downloadable !== 'boolean' ||
+      typeof item.sender !== 'string' || typeof item.removable !== 'boolean' ||
+      typeof item.kind !== 'string' || !['file', 'text', 'link', 'image', 'video'].includes(item.kind)) throw new Error('Invalid file list');
     return {
       index: item.index, name: item.name, size: item.size,
-      filename: typeof item.filename === 'string' ? item.filename : item.name,
-      downloadable: item.size !== null && (typeof item.downloadable === 'boolean' ? item.downloadable : item.source !== 'mobile'),
+      filename: item.filename, downloadable: item.size !== null && item.downloadable,
       text: typeof item.text === 'string' ? item.text : undefined,
-      source: item.source === 'mobile' ? 'mobile' : 'desktop',
-      sender: typeof item.sender === 'string' && item.sender.trim() ? item.sender.slice(0, 256) : item.source === 'mobile' ? 'Mobile' : 'Desktop',
-      removable: item.removable === true,
-      kind: typeof item.kind === 'string' ? item.kind as SharedItem['kind'] : typeof item.text === 'string' ? 'text' : 'file',
+      sender: item.sender.slice(0, 256), removable: item.removable,
+      kind: item.kind as SharedItem['kind'],
     };
   });
 }

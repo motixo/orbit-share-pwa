@@ -1,5 +1,6 @@
 interface PeerAddress {
   host: string;
+  share: string;
   port: number;
   fingerprint: string;
   mdns?: string;
@@ -29,7 +30,6 @@ interface ShareSession {
   connecting: boolean;
   retry: boolean;
   lastSeen: number;
-  heartbeat?: boolean;
   forgotten?: boolean;
   error?: string;
   name?: Promise<string>;
@@ -38,13 +38,30 @@ interface ShareSession {
   itemsTimer?: ReturnType<typeof setTimeout>;
   itemsRevision?: number;
   thumbnails?: Map<number, Promise<string | undefined>>;
+  requests?: {
+    active: number;
+    thumbnail: boolean;
+    queued: Array<{ action: RequestAction; start(): void; reject(error: Error): void }>;
+  };
 }
 
-type RequestAction = 'list' | 'file' | 'upload' | 'text' | 'remove' | 'thumbnail';
+type RequestAction = 'list' | 'file' | 'upload' | 'text' | 'remove' | 'thumbnail' | 'croc-file' | 'croc-upload' | 'croc-result' | 'croc-cancel';
+type ControlAction = Exclude<RequestAction, 'file' | 'upload'>;
 interface RequestFields {
   index?: number;
   name?: string;
+  id?: string;
+  size?: number;
+  checksum?: string;
 }
+
+type CrocTicket = import('./transfer-types').CrocTicket;
+type DownloadSink = import('./transfer-types').DownloadSink;
+interface CrocPreparedFile { file: File; name: string; size: number; hash: Uint8Array; modified: string; compressed?: boolean }
+declare const OrbitCroc: {
+  prepare(payload: Blob, name: string, signal: AbortSignal): Promise<CrocPreparedFile[]>;
+  transfer(pc: RTCPeerConnection, ticket: CrocTicket, signal: AbortSignal, progress: TransferProgress, prepared?: CrocPreparedFile[], sink?: DownloadSink): Promise<Blob>;
+};
 type TransferProgress = (done: number, total: number) => void;
 interface ResponseHeader {
   status: number;
@@ -58,7 +75,6 @@ interface SharedItem {
   downloadable: boolean;
   size: number | null;
   text?: string;
-  source: 'desktop' | 'mobile';
   sender: string;
   removable: boolean;
   kind: 'file' | 'text' | 'link' | 'image' | 'video';
@@ -78,9 +94,15 @@ interface Navigator {
   };
 }
 
+interface Window {
+  BarcodeDetector?: new (options: { formats: string[] }) => {
+    detect(source: HTMLVideoElement): Promise<Array<{ rawValue: string }>>;
+  };
+}
+
 declare function jsQR(
   data: Uint8ClampedArray,
   width: number,
   height: number,
-  options: { inversionAttempts: 'dontInvert' },
+  options: { inversionAttempts: 'attemptBoth' },
 ): { data: string } | null;

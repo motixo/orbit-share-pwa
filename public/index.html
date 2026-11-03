@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="style.css">
 <script src="vendor/jsQR.js" defer></script>
 <script src="protocol.js" defer></script>
+<script src="croc.js" defer></script>
 <script src="app.js" defer></script>
 <body>
 <main>
@@ -43,19 +44,19 @@
       </button>
     </section>
     <a id="skip-install" href="?view=share">Skip and use in browser</a>
-    <p id="about-sharing">Encrypted WebRTC sends files and text directly between your devices. The app is cached after your first online visit so it can reopen offline. Keep both devices on the same Wi-Fi or hotspot; no internet needed for transfers.</p>
+    <p id="about-sharing">Croc encrypts and transfers files directly between your devices. WebRTC connects the browser and syncs text and items. The app is cached after your first online visit so it can reopen offline. Keep both devices on the same Wi-Fi or hotspot; no internet needed for transfers.</p>
     <p id="report-issue">If you run into a problem, open an issue below.<a href="https://github.com/motixo/orbit-share-pwa/issues" target="_blank" rel="noopener noreferrer">GitHub Issues</a></p>
   </section>
   <p id="status" role="status" aria-live="polite"></p>
   <section id="share-page" hidden aria-label="Orbit Share">
     <section id="pairing">
+      <section id="camera" hidden aria-label="QR scanner"><video autoplay playsinline muted></video><button id="cancel-scan" type="button">Cancel</button></section>
       <form id="pair-link" hidden>
         <input id="connection-link" type="url" inputmode="url" placeholder="Connection link" aria-label="Connection link" autocomplete="off" autocapitalize="off" spellcheck="false" required>
         <button id="pair-link-submit">Connect</button>
       </form>
       <p id="pair-help">Scanning requires camera access. You can also pair with a connection link.</p>
       <button id="use-link" type="button" aria-controls="pair-link" aria-expanded="false">Use a connection link</button>
-      <section id="camera" hidden><video playsinline muted></video><button id="cancel-scan">Cancel</button></section>
     </section>
     <p id="offline" hidden></p>
     <div id="connected" hidden>

@@ -3,6 +3,7 @@ const scanButton = document.querySelector<HTMLButtonElement>('#scan')!;
 let session: ShareSession | undefined;
 let camera: MediaStream | undefined;
 let scanning = false;
+let cameraGeneration = 0;
 let installPrompt: BeforeInstallPromptEvent | undefined;
 let active = 0;
 let pairs: PairedDevice[] = [];
@@ -11,6 +12,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let retryDelay = 1000;
 let pageClosed = false;
+let downloadReady: Promise<void> | undefined;
 
 function scheduleReconnect(current: ShareSession) {
   if (session !== current || current.forgotten || !current.retry || pageClosed || scanning || reconnectTimer !== undefined) return;
@@ -24,16 +26,17 @@ function scheduleReconnect(current: ShareSession) {
   retryDelay = Math.min(retryDelay * 2, 5000);
 }
 
-function disconnected(current: ShareSession) {
+function disconnected(current: ShareSession, close = true) {
   if (session !== current) return;
   clearTimeout(current.itemsTimer);
   clearInterval(heartbeatTimer);
   heartbeatTimer = undefined;
   current.ready = false;
+  pumpRequests(current);
   document.getElementById('connected')!.hidden = true;
   clearThumbnails(current);
   statusElement.textContent = current.forgotten ? 'Forgotten' : current.error || 'Disconnected';
-  if (current.pc.connectionState !== 'closed') current.pc.close();
+  if (close && current.pc.connectionState !== 'closed') current.pc.close();
   renderPairs();
   scheduleReconnect(current);
 }
@@ -109,7 +112,13 @@ function renderPairs() {
     forget.textContent = 'Forget';
     forget.disabled = active > 0 || Boolean(session?.forgotten && session.info.fingerprint === info.fingerprint);
     forget.addEventListener('click', () => forgetDevice(info, forget));
-    row.append(name, button, forget);
+    row.append(name, button);
+    const open = document.createElement('button');
+    open.textContent = 'New Orbit';
+    open.disabled = button.disabled;
+    open.addEventListener('click', () => connect(info, false, true).catch(error => { statusElement.textContent = errorMessage(error); }));
+    row.append(open);
+    row.append(forget);
     root.append(row);
   }
 }
@@ -139,17 +148,43 @@ async function forgetDevice(info: DeviceInfo, button: HTMLButtonElement) {
   }
 }
 
-function disconnect() {
-  const current = session;
-  if (!current) return;
+function stopConnection(current: ShareSession, notify: boolean) {
   current.retry = false;
-  clearTimeout(reconnectTimer);
-  reconnectTimer = undefined;
-  disconnected(current);
-  session = undefined;
+  if (session === current) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+    disconnected(current, false);
+    session = undefined;
+    scanButton.disabled = active > 0;
+    renderPairs();
+  }
+  const control = current.control;
+  if (control.readyState !== 'open') { current.pc.close(); return; }
+  if (!notify) {
+    try { control.send('disconnect-ack'); } catch {}
+    current.pc.close();
+    return;
+  }
+  const closed = () => {
+    clearTimeout(timer);
+    control.removeEventListener('message', acknowledged);
+    control.removeEventListener('close', closed);
+    current.pc.close();
+  };
+  const acknowledged = (event: MessageEvent<unknown>) => {
+    if (event.data === 'disconnect-ack') closed();
+  };
+  const timer = setTimeout(closed, 1000);
+  control.addEventListener('message', acknowledged);
+  control.addEventListener('close', closed, { once: true });
+  try { control.send('disconnect'); } catch { closed(); }
+}
+
+function disconnect() {
+  if (!session) return;
+  stopConnection(session, true);
   stopCamera();
   statusElement.textContent = '';
-  renderPairs();
 }
 
 function revokeDevice(current: ShareSession): Promise<void> {
@@ -178,7 +213,7 @@ function revokeDevice(current: ShareSession): Promise<void> {
 
 async function rememberDevice(message: Record<string, unknown>, current: ShareSession) {
   if (session !== current || current.forgotten || !current.ready || typeof message.id !== 'string' || !deviceID.test(message.id) ||
-    typeof message.fingerprint !== 'string' || message.fingerprint.toUpperCase() !== current.info.fingerprint.toUpperCase()) throw new Error('Invalid device');
+    message.share !== current.info.share || typeof message.fingerprint !== 'string' || message.fingerprint.toUpperCase() !== current.info.fingerprint.toUpperCase()) throw new Error('Invalid device');
   let key = current.info.key;
   if (message.token) {
     if (typeof message.token !== 'string' || !/^[0-9a-f]{64}$/i.test(message.token)) throw new Error('Invalid device');
@@ -190,7 +225,7 @@ async function rememberDevice(message: Record<string, unknown>, current: ShareSe
     throw new Error('Invalid device');
   }
   const info = validateInfo({
-    host: message.host, port: message.port, fingerprint: message.fingerprint,
+    host: message.host, port: message.port, share: message.share, fingerprint: message.fingerprint,
     mdns: message.mdns || '', id: message.id, key,
     name: typeof message.name === 'string' ? message.name.slice(0, 80) : 'Computer', last: Date.now(),
   });
@@ -215,7 +250,8 @@ async function deviceName() {
   return '';
 }
 
-async function connect(info: DeviceInfo, retry = false) {
+async function connect(info: DeviceInfo, retry = false, open = false) {
+  if (open && (!info.key || retry)) throw new Error('Pair this device first.');
   info = validateInfo(info);
   stopCamera();
   clearTimeout(reconnectTimer);
@@ -226,26 +262,38 @@ async function connect(info: DeviceInfo, retry = false) {
   const previous = session;
   clearTimeout(previous?.itemsTimer);
   if (previous) clearThumbnails(previous);
+  if (previous && !retry) stopConnection(previous, true);
   session = undefined;
-  previous?.pc.close();
+  if (retry) previous?.pc.close();
   scanButton.disabled = true;
   document.getElementById('connected')!.hidden = true;
   statusElement.textContent = 'Connecting…';
-  const pc = new RTCPeerConnection({ iceServers: [] });
-  const control = pc.createDataChannel('orbit', { ordered: true });
-  const current: ShareSession = { pc, control, info, ready: false, connecting: true, retry: true, lastSeen: performance.now() };
+  let peer: RTCPeerConnection | undefined;
+  let control: RTCDataChannel;
+  try {
+    peer = new RTCPeerConnection({ iceServers: [] });
+    control = peer.createDataChannel('orbit', { ordered: true });
+  } catch (error) {
+    peer?.close();
+    scanButton.disabled = active > 0;
+    renderPairs();
+    statusElement.textContent = errorMessage(error) || 'Could not connect';
+    return;
+  }
+  const pc = peer;
+  const current: ShareSession = { pc, control, info, ready: false, connecting: true, retry, lastSeen: performance.now() };
   session = current;
   renderPairs();
   control.addEventListener('message', event => {
     if (session !== current) return;
-    if (event.data === 'ping' || event.data === 'pong') {
-      current.heartbeat = true;
+    if (event.data === 'disconnect') {
+      stopConnection(current, false);
+    } else if (event.data === 'ping' || event.data === 'pong') {
       current.lastSeen = performance.now();
       if (event.data === 'ping' && control.readyState === 'open') {
         try { control.send('pong'); } catch { disconnected(current); }
       }
-    } else if (event.data === 'items-changed') {
-      void refreshItems(current);
+
     } else if (event.data === 'device-info' || event.data === 'pairing') {
       current.name ??= deviceName();
       current.name.then(name => {
@@ -257,16 +305,22 @@ async function connect(info: DeviceInfo, retry = false) {
       (async () => {
         const message: unknown = JSON.parse(event.data);
         if (!isRecord(message)) throw new Error('Invalid response');
-        if (message.type === 'items') {
+        if (message.type === 'session') {
+          if (current.ready || typeof message.share !== 'string' || !deviceID.test(message.share) ||
+            (!open && message.share !== current.info.share)) throw new Error('Invalid session');
+          current.info = { ...current.info, share: message.share };
+        } else if (message.type === 'items') {
           if (typeof message.revision !== 'number' || !Number.isSafeInteger(message.revision) || message.revision < 0) throw new Error('Invalid revision');
           if (current.itemsRevision !== message.revision) {
             current.itemsRevision = message.revision;
             await refreshItems(current);
           }
         } else if (message.type === 'challenge') {
-          if (!info.key || typeof message.value !== 'string' ||
-            !message.value.startsWith('orbit-pair-v1\n' + info.fingerprint + '\n') ||
-            !/^[0-9a-f]{64}$/.test(message.value.split('\n')[2] || '') || message.value.split('\n').length !== 3) throw new Error('Invalid challenge');
+          if (!info.key || typeof message.value !== 'string') throw new Error('Invalid challenge');
+          const parts = message.value.split('\n');
+          if (parts.length !== 5 || parts[0] !== 'orbit-pair-v3' || parts[1] !== info.fingerprint ||
+            !deviceID.test(parts[2]) || retry && parts[2] !== info.share || parts[3] !== (open ? 'open' : 'connect') || !/^[0-9a-f]{64}$/.test(parts[4])) throw new Error('Invalid challenge');
+          current.info = { ...current.info, share: parts[2] };
           const proof = await crypto.subtle.sign('HMAC', info.key, new TextEncoder().encode(message.value));
           const signature = btoa(String.fromCharCode(...new Uint8Array(proof))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
           if (control.readyState === 'open') control.send(JSON.stringify({ type: 'proof', signature }));
@@ -287,15 +341,19 @@ async function connect(info: DeviceInfo, retry = false) {
     }
   });
   const opened = new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => { reject(new Error('Could not connect')); disconnected(current); }, 8000);
-    const closed = () => { clearTimeout(timer); reject(new Error('Disconnected')); };
+    const timer = setTimeout(() => { reject(new Error('Could not connect')); disconnected(current); }, open ? 22000 : 8000);
+    const closed = () => { clearTimeout(timer); reject(new Error(current.error || 'Disconnected')); };
     control.addEventListener('close', closed, { once: true });
-    control.addEventListener('open', () => control.send(info.key ? JSON.stringify({ type: 'auth', id: info.id }) : info.token), { once: true });
+    control.addEventListener('open', () => control.send(info.key ? JSON.stringify({ type: 'auth', id: info.id, share: info.share, resume: retry, open }) : info.token), { once: true });
     control.addEventListener('message', function ready(event) {
-      if (event.data === 'rejected' || event.data === 'unavailable') {
+      if (session !== current) return;
+      if (['rejected', 'unavailable', 'open-denied', 'open-failed'].includes(event.data)) {
         clearTimeout(timer);
-        current.retry = event.data !== 'rejected';
-        current.error = event.data === 'rejected' ? 'Device not paired. Scan again.' : 'Open Orbit Share.';
+        control.removeEventListener('message', ready);
+        if (event.data !== 'unavailable') current.retry = false;
+        current.error = event.data === 'rejected' ? 'Device not paired. Scan again.'
+          : event.data === 'open-denied' ? 'Opening Orbits is not allowed on this computer.'
+          : event.data === 'open-failed' ? 'Could not open Orbit.' : 'Open Orbit Share.';
         reject(new Error(current.error));
         disconnected(current);
         return;
@@ -304,6 +362,7 @@ async function connect(info: DeviceInfo, retry = false) {
       clearTimeout(timer);
       control.removeEventListener('message', ready);
       current.ready = true;
+      current.retry = true;
       current.lastSeen = performance.now();
       resolve();
     });
@@ -338,7 +397,7 @@ async function connect(info: DeviceInfo, retry = false) {
     retryDelay = 1000;
     heartbeatTimer = setInterval(() => {
       if (session !== current || current.forgotten) return;
-      if (current.heartbeat && performance.now() - current.lastSeen >= 6000) disconnected(current);
+      if (performance.now() - current.lastSeen >= 6000) disconnected(current);
       else {
         try { control.send('ping'); } catch { disconnected(current); }
       }
@@ -383,10 +442,144 @@ function drain(dc: RTCDataChannel, signal: AbortSignal): Promise<void> {
   });
 }
 
-async function request(action: RequestAction, fields: RequestFields = {}, payload?: Blob, progress?: TransferProgress): Promise<Blob> {
+async function downloadSink(): Promise<DownloadSink & { save(name: string): void }> {
+  if (!downloadReady) throw new Error('Downloads need service worker support.');
+  await downloadReady;
+  const writer = new Worker('/download-worker.js', { type: 'module' });
+  let stopped = false;
+  let file: File | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let pending: { resolve(value: File | undefined): void; reject(error: Error): void } | undefined;
+  writer.onmessage = event => {
+    clearTimeout(timeout);
+    const request = pending;
+    pending = undefined;
+    if (event.data.error) request?.reject(new Error(event.data.error));
+    else request?.resolve(event.data.file);
+  };
+  writer.onerror = () => { clearTimeout(timeout); pending?.reject(new Error('Could not save download')); pending = undefined; };
+  const command = (type: string, data?: ArrayBuffer, size?: number, position?: number) => new Promise<File | undefined>((resolve, reject) => {
+    if (stopped) { reject(new Error('Download cancelled')); return; }
+    pending = { resolve, reject };
+    timeout = setTimeout(() => { reject(new Error('Saving download timed out')); abort(); }, 60000);
+    writer.postMessage({ type, data, size, position }, data ? [data] : []);
+  });
+  const abort = () => {
+    if (stopped) return;
+    clearTimeout(timeout);
+    pending?.reject(new Error('Download cancelled'));
+    pending = undefined;
+    writer.postMessage({ type: 'abort' });
+    stopped = true;
+    // Give the worker time to close and remove a partial file.
+    setTimeout(() => writer.terminate(), 5000);
+  };
+  try { await command('open'); }
+  catch (error) { abort(); throw error; }
+  return {
+    async prepare(size) { await command('prepare', undefined, size); },
+    async writeAt(position, data) { await command('write', data, undefined, position); },
+    async finish() {
+      file = await command('finish');
+      if (!file) throw new Error('Could not save download');
+      return file;
+    },
+    save(name) {
+      if (stopped || !file) throw new Error('Download unavailable');
+      const link = document.createElement('a');
+      link.href = '/downloads/' + file.name + '?name=' + encodeURIComponent(name);
+      link.download = name;
+      document.body.append(link);
+      try { link.click(); } finally { link.remove(); }
+      stopped = true;
+      writer.terminate();
+    },
+    abort,
+  };
+}
+
+function pumpRequests(current: ShareSession) {
+  const requests = current.requests;
+  if (!requests) return;
+  if (session !== current || !current.ready) {
+    for (const queued of requests.queued.splice(0)) queued.reject(new Error('Disconnected'));
+    return;
+  }
+  while (requests.active < 3 && requests.queued.length) {
+    let index = requests.queued.findIndex(queued => queued.action !== 'thumbnail');
+    if (index < 0) {
+      if (requests.thumbnail) return;
+      index = 0;
+    }
+    requests.queued.splice(index, 1)[0].start();
+  }
+}
+
+function requestSlot(current: ShareSession, action: RequestAction): Promise<() => void> {
+  const requests = current.requests ??= { active: 0, thumbnail: false, queued: [] };
+  return new Promise((resolve, reject) => {
+    requests.queued.push({ action, reject, start() {
+      requests.active++;
+      if (action === 'thumbnail') requests.thumbnail = true;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        requests.active--;
+        if (action === 'thumbnail') requests.thumbnail = false;
+        pumpRequests(current);
+      });
+    } });
+    pumpRequests(current);
+  });
+}
+
+async function request(action: RequestAction, fields: RequestFields = {}, payload?: Blob, progress?: TransferProgress, sink?: DownloadSink): Promise<Blob> {
+  if (action !== 'file' && action !== 'upload') return requestControl(action, fields, payload);
   if (!session?.ready) throw new Error('Scan the QR first.');
-  const pc = session.pc;
-  const dc = pc.createDataChannel('request', { ordered: true });
+  const current = session;
+  const abort = new AbortController();
+  const stopped = () => abort.abort();
+  current.control.addEventListener('close', stopped, { once: true });
+  let ticket: CrocTicket | undefined;
+  try {
+    if (payload) statusElement.textContent = 'Preparing';
+    const prepared = payload ? await OrbitCroc.prepare(payload, fields.name ?? 'file', abort.signal) : undefined;
+    if (session !== current || !current.ready) throw new Error('Disconnected');
+    const response = await requestControl(action === 'file' ? 'croc-file' : 'croc-upload', { ...fields, size: payload?.size ?? 0 });
+    ticket = JSON.parse(await response.text());
+    if (!ticket || session !== current || !current.ready) throw new Error('Disconnected');
+    let sampled = 0;
+    const report: TransferProgress = (done, total) => {
+      progress?.(done, total);
+      if (performance.now() - sampled < 250 && done < total) return;
+      sampled = performance.now();
+      if (current.control.readyState === 'open') current.control.send(JSON.stringify({ type: 'croc-progress', id: ticket!.id, done }));
+    };
+    const result = await OrbitCroc.transfer(current.pc, ticket, abort.signal, report, prepared, sink);
+    if (session !== current || !current.ready) throw new Error('Disconnected');
+    const checksum = prepared ? Array.from(prepared[0].hash, byte => byte.toString(16).padStart(2, '0')).join('') : undefined;
+    await requestControl('croc-result', { id: ticket.id, checksum });
+    ticket = undefined;
+    return result;
+  } catch (error) { sink?.abort(); throw error; }
+  finally {
+    abort.abort();
+    current.control.removeEventListener('close', stopped);
+    if (ticket && session === current && current.ready) void requestControl('croc-cancel', { id: ticket.id }).catch(() => {});
+  }
+}
+
+async function requestControl(action: ControlAction, fields: RequestFields = {}, payload?: Blob): Promise<Blob> {
+  if (!session?.ready) throw new Error('Scan the QR first.');
+  const current = session;
+  const release = await requestSlot(current, action);
+  let dc: RTCDataChannel;
+  try {
+    if (session !== current || !current.ready) throw new Error('Disconnected');
+    dc = current.pc.createDataChannel('request', { ordered: true });
+  } catch (error) { release(); throw error; }
+  dc.addEventListener('close', release, { once: true });
   dc.binaryType = 'arraybuffer';
   dc.bufferedAmountLowThreshold = 65536;
   const abort = new AbortController();
@@ -411,36 +604,42 @@ async function request(action: RequestAction, fields: RequestFields = {}, payloa
     reset();
     dc.addEventListener('close', () => fail(new Error('Transfer interrupted')), { once: true });
     dc.addEventListener('error', () => fail(new Error('Transfer failed')), { once: true });
-    dc.addEventListener('message', async event => {
-      try {
-        reset();
-        if (typeof event.data === 'string') {
-          const message: unknown = JSON.parse(event.data);
-          if (!isRecord(message)) throw new Error('Invalid response');
-          if (message.type === 'response') {
-            if (header || typeof message.status !== 'number' || !Number.isInteger(message.status) ||
-              typeof message.size !== 'number' || !Number.isInteger(message.size) || message.size < -1 || message.size > 1024 ** 3) throw new Error('Invalid response');
-            header = { status: message.status, size: message.size };
-          } else if (message.type === 'error') {
-            throw new Error(typeof message.message === 'string' && message.message || 'Transfer failed');
-          } else if (message.type === 'end') {
-            if (!header || header.size >= 0 && received !== header.size) throw new Error('Incomplete file');
-            const body = new Blob(chunks);
-            finished = true;
-            clearTimeout(timer);
-            abort.abort();
-            if (header.status < 200 || header.status >= 300) reject(new Error((await body.text()).slice(0, 200) || 'Transfer failed'));
-            else resolve(body);
-            dc.close();
-          } else throw new Error('Invalid response');
-        } else {
-          if (!header || !(event.data instanceof ArrayBuffer)) throw new Error('Invalid response');
-          received += event.data.byteLength;
-          if (received > 1024 ** 3 || header.size >= 0 && received > header.size) throw new Error('Invalid file size');
-          chunks.push(event.data);
-          if (!payload) progress?.(received, header.size);
-        }
-      } catch (error) { fail(error); }
+    let messages = Promise.resolve();
+    dc.addEventListener('message', event => {
+      messages = messages.then(async () => {
+        if (finished) return;
+        try {
+          reset();
+          if (typeof event.data === 'string') {
+            const message: unknown = JSON.parse(event.data);
+            if (!isRecord(message)) throw new Error('Invalid response');
+            if (message.type === 'response') {
+              if (header || typeof message.status !== 'number' || !Number.isInteger(message.status) ||
+                typeof message.size !== 'number' || !Number.isSafeInteger(message.size) || message.size < -1) throw new Error('Invalid response');
+              header = { status: message.status, size: message.size };
+            } else if (message.type === 'error') {
+              throw new Error(typeof message.message === 'string' && message.message || 'Transfer failed');
+            } else if (message.type === 'pending') {
+              return;
+            } else if (message.type === 'end') {
+              if (!header || header.size >= 0 && received !== header.size) throw new Error('Incomplete file');
+              const body = new Blob(chunks);
+              finished = true;
+              clearTimeout(timer);
+              abort.abort();
+              if (header.status < 200 || header.status >= 300) reject(new Error((await body.text()).slice(0, 200) || 'Transfer failed'));
+              else resolve(body);
+              dc.close();
+            } else throw new Error('Invalid response');
+          } else {
+            if (!header || !(event.data instanceof ArrayBuffer)) throw new Error('Invalid response');
+            received += event.data.byteLength;
+            if (!Number.isSafeInteger(received) || header.size >= 0 && received > header.size) throw new Error('Invalid file size');
+            if (received > 16 * 1024 * 1024) throw new Error('Response too large');
+            chunks.push(event.data);
+          }
+        } catch (error) { fail(error); }
+      });
     });
     dc.addEventListener('open', async () => {
       try {
@@ -452,7 +651,6 @@ async function request(action: RequestAction, fields: RequestFields = {}, payloa
             const data = await payload.slice(offset, offset + 16384).arrayBuffer();
             if (abort.signal.aborted) return;
             dc.send(data);
-            progress?.(Math.min(offset + data.byteLength, payload.size), payload.size);
             reset();
           }
           await drain(dc, abort.signal);
@@ -481,6 +679,7 @@ function progress(label: string): TransferProgress {
 }
 
 function errorMessage(error: unknown): string {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException) return error.message || error.name;
   return error instanceof Error ? error.message : '';
 }
 
@@ -568,7 +767,7 @@ async function listItems(current: ShareSession) {
     meta.className = 'item-meta';
     const detail = document.createElement('span');
     detail.className = 'item-detail';
-    detail.textContent = item.size === null ? 'Missing' : item.kind === 'link' ? 'Link' : item.text === undefined ? item.filename : 'Text';
+    detail.textContent = item.size === null ? 'Unavailable' : item.kind === 'link' ? 'Link' : item.text === undefined ? item.filename : 'Text';
     const sender = document.createElement('span');
     sender.className = 'sender';
     sender.textContent = item.sender;
@@ -586,15 +785,12 @@ async function listItems(current: ShareSession) {
     download.addEventListener('click', () => busy(download, async () => {
       if (session !== current || !current.ready) throw new Error('Disconnected');
       if (!item.downloadable) return;
-      const blob = await request('file', { index: item.index }, undefined, progress('Downloading'));
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = item.filename;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      const sink = await downloadSink();
+      try {
+        await request('file', { index: item.index }, undefined, progress('Downloading'), sink);
+        sink.save(item.filename);
+      }
+      catch (error) { sink.abort(); throw error; }
     }));
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -639,7 +835,9 @@ async function listItems(current: ShareSession) {
       current.thumbnails ??= new Map();
       let pending = current.thumbnails.get(item.index);
       if (!pending) {
-        pending = request('thumbnail', { index: item.index }).then(blob => URL.createObjectURL(new Blob([blob], { type: 'image/png' }))).catch(() => undefined);
+        pending = request('thumbnail', { index: item.index })
+          .then(blob => URL.createObjectURL(new Blob([blob], { type: 'image/png' })))
+          .catch(() => { current.thumbnails?.delete(item.index); return undefined; });
         current.thumbnails.set(item.index, pending);
       }
       void pending.then(url => {
@@ -655,49 +853,85 @@ async function listItems(current: ShareSession) {
 
 function stopCamera() {
   scanning = false;
+  cameraGeneration++;
   camera?.getTracks().forEach(track => track.stop());
   camera = undefined;
   document.querySelector('video')!.srcObject = null;
   document.getElementById('camera')!.hidden = true;
+  document.body.classList.remove('scanning');
 }
 
 scanButton.addEventListener('click', async () => {
   if (scanning) return;
+  const generation = ++cameraGeneration;
   try {
     scanning = true;
+    document.body.classList.add('scanning');
+    document.getElementById('camera')!.hidden = false;
+    statusElement.textContent = '';
     clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
-    camera = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 960 } }, audio: false });
-    if (!scanning) { stopCamera(); return; }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    });
+    if (generation !== cameraGeneration) { stream.getTracks().forEach(track => track.stop()); return; }
+    camera = stream;
     const video = document.querySelector('video')!;
     video.srcObject = camera;
-    document.getElementById('camera')!.hidden = false;
     await video.play();
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) throw new Error('Could not open camera');
-    while (scanning) {
+    let detector: InstanceType<NonNullable<Window['BarcodeDetector']>> | undefined;
+    try { if (window.BarcodeDetector) detector = new window.BarcodeDetector({ formats: ['qr_code'] }); } catch {}
+    let frame = 0;
+    while (scanning && generation === cameraGeneration) {
       if (video.readyState >= 2 && video.videoWidth) {
-        canvas.width = Math.min(960, video.videoWidth);
-        canvas.height = Math.round(canvas.width * video.videoHeight / video.videoWidth);
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const image = context.getImageData(0, 0, canvas.width, canvas.height);
-        const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'dontInvert' });
-        if (code) {
+        let value: string | undefined;
+        if (detector) {
+          try { value = (await detector.detect(video))[0]?.rawValue; }
+          catch { detector = undefined; }
+        }
+        if (generation !== cameraGeneration) return;
+        if (!value) {
+          const crop = ++frame % 2 === 0 ? Math.min(video.videoWidth, video.videoHeight) * .8 : 0;
+          const width = crop || video.videoWidth;
+          const height = crop || video.videoHeight;
+          const scale = Math.min(1, 1280 / Math.max(width, height));
+          canvas.width = Math.round(width * scale);
+          canvas.height = Math.round(height * scale);
+          context.imageSmoothingEnabled = false;
+          context.drawImage(video, (video.videoWidth - width) / 2, (video.videoHeight - height) / 2,
+            width, height, 0, 0, canvas.width, canvas.height);
+          const image = context.getImageData(0, 0, canvas.width, canvas.height);
+          value = jsQR(image.data, image.width, image.height, { inversionAttempts: 'attemptBoth' })?.data;
+        }
+        if (value) {
           let info;
-          try { info = invitation(code.data); } catch { statusElement.textContent = 'Scan an Orbit Share QR.'; }
-          if (info) { stopCamera(); await connect(info); break; }
+          try { info = invitation(value); } catch { statusElement.textContent = 'Scan an Orbit Share QR.'; }
+          if (info) {
+            stopCamera();
+            await connect(info).catch(error => { statusElement.textContent = errorMessage(error) || 'Could not connect'; });
+            break;
+          }
         }
       }
       await new Promise(resolve => setTimeout(resolve, 120));
     }
   } catch (error) {
+    if (generation !== cameraGeneration) return;
     stopCamera();
     statusElement.textContent = errorMessage(error) || 'Could not open camera';
     resumeConnection();
   }
 });
-document.getElementById('cancel-scan')!.addEventListener('click', () => { stopCamera(); resumeConnection(); });
+document.getElementById('cancel-scan')!.addEventListener('click', () => {
+  stopCamera();
+  statusElement.textContent = '';
+  scanButton.focus();
+  resumeConnection();
+});
 document.getElementById('disconnect')!.addEventListener('click', disconnect);
 
 const connectionForm = document.querySelector<HTMLFormElement>('#pair-link')!;
@@ -739,7 +973,6 @@ connectionForm.addEventListener('submit', async event => {
 
 async function uploadFiles(files: Iterable<File>) {
   for (const file of files) {
-    if (file.size > 1024 ** 3) throw new Error('File exceeds 1 GiB.');
     await request('upload', { name: file.name }, file, progress('Uploading'));
   }
   if (session) await refreshItems(session);
@@ -825,7 +1058,7 @@ window.addEventListener('pagehide', () => {
   stopCamera();
   clearTimeout(reconnectTimer);
   reconnectTimer = undefined;
-  if (session) disconnected(session);
+  if (session) stopConnection(session, true);
 });
 window.addEventListener('pageshow', () => { pageClosed = false; resumeConnection(); });
 window.addEventListener('online', resumeConnection);
@@ -841,7 +1074,7 @@ const installHelp = document.getElementById('install-help')!;
 const welcome = document.getElementById('welcome')!;
 const sharePage = document.getElementById('share-page')!;
 const pageQuery = new URLSearchParams(location.search);
-const shareRequested = pageQuery.get('view') === 'share' || pageQuery.has('preview') || !!location.hash;
+const shareRequested = pageQuery.get('view') === 'share' || !!location.hash;
 let appInstalled = false;
 let started = false;
 
@@ -903,11 +1136,29 @@ installButton.addEventListener('click', async () => {
 });
 updateInstallation();
 
-if ('serviceWorker' in navigator && !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {
+if ('serviceWorker' in navigator) {
   const offline = document.getElementById('offline')!;
-  navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready).then(() => {
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  downloadReady = navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready).then(async () => {
+    if (navigator.serviceWorker.controller) return;
+    await new Promise<void>((resolve, reject) => {
+      const changed = () => {
+        if (!navigator.serviceWorker.controller) return;
+        clearTimeout(timer);
+        navigator.serviceWorker.removeEventListener('controllerchange', changed);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        navigator.serviceWorker.removeEventListener('controllerchange', changed);
+        reject(new Error('Downloads unavailable. Reload to retry.'));
+      }, 10000);
+      navigator.serviceWorker.addEventListener('controllerchange', changed);
+      changed();
+    });
+  });
+  void downloadReady.then(() => {
     offline.textContent = 'Ready offline';
-    offline.hidden = false;
+    offline.hidden = local;
   }).catch(() => { offline.textContent = 'Offline setup failed. Reload to retry.'; offline.hidden = false; });
 }
 async function start() {
@@ -933,6 +1184,5 @@ async function start() {
     renderPairs();
   } catch {}
   if (session || scanning) return;
-  const info = initial || pairs[0];
-  if (info) await connect(info);
+  if (initial) await connect(initial);
 }

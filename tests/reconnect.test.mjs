@@ -30,22 +30,32 @@ function connection() {
       disconnect,
       refresh: refreshItems,
       closePage() { pageClosed = true; },
-      schedule: scheduleReconnect, disconnected, resume: resumeConnection,
+      schedule: scheduleReconnect, disconnected, resume: resumeConnection, stop: stopConnection,
     })`, {
-    document: { getElementById: getElement, querySelector: selector => getElement(selector), createElement: makeElement },
+    document: { getElementById: getElement, querySelector: selector => getElement(selector), createElement: makeElement, body: { classList: { remove() {} } } },
     performance: { now: () => 1000 },
     setTimeout(callback, delay) { const id = ++next; timers.set(id, { callback, delay }); return id; },
     clearTimeout(id) { timers.delete(id); },
     clearInterval() {},
   });
+  const listeners = new Map();
   const current = {
     pc: { connectionState: 'connected', close() { this.connectionState = 'closed'; } },
-    control: { readyState: 'open', send() {} },
+    control: {
+      readyState: 'open', sent: [],
+      send(message) { this.sent.push(message); },
+      addEventListener(type, callback) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(callback);
+      },
+      removeEventListener(type, callback) { listeners.get(type)?.delete(callback); },
+      emit(type, data) { for (const callback of [...(listeners.get(type) || [])]) callback({ data }); },
+    },
     info: { fingerprint: 'desktop' }, ready: true, retry: true, connecting: false,
   };
   app.select(current);
   app.list(() => Promise.resolve());
-  return { app, current, timers, element: getElement('connected'), paired: getElement('paired') };
+  return { app, current, timers, element: getElement('connected'), paired: getElement('paired'), scan: getElement('#scan') };
 }
 
 test('disconnect keeps saved devices, clears retries, and hides the connected view', () => {
@@ -55,6 +65,9 @@ test('disconnect keeps saved devices, clears retries, and hides the connected vi
   assert.equal(paired.children.length, 2);
   app.schedule(current);
   app.disconnect();
+  assert.deepEqual(current.control.sent, ['disconnect']);
+  assert.equal(current.pc.connectionState, 'connected');
+  current.control.emit('message', 'disconnect-ack');
   assert.equal(current.pc.connectionState, 'closed');
   assert.equal(element.hidden, true);
   assert.equal(current.retry, false);
@@ -64,6 +77,39 @@ test('disconnect keeps saved devices, clears retries, and hides the connected vi
   assert.equal(timers.size, 0);
   app.saved([]);
   assert.equal(paired.children.length, 0);
+});
+
+test('a desktop disconnect stops retries and resume without forgetting the device', () => {
+  const { app, current, timers, element, scan } = connection();
+  const devices = [{ ...current.info, name: 'Computer' }];
+  app.saved(devices);
+  scan.disabled = true;
+  app.schedule(current);
+  app.stop(current, false);
+  assert.deepEqual(current.control.sent, ['disconnect-ack']);
+  assert.equal(current.retry, false);
+  assert.equal(current.pc.connectionState, 'closed');
+  assert.equal(element.hidden, true);
+  assert.equal(scan.disabled, false);
+  app.disconnected(current);
+  app.resume();
+  app.schedule(current);
+  assert.equal(timers.size, 0);
+  assert.equal(app.pairs(), devices);
+});
+
+test('intentional close is bounded when the peer cannot acknowledge', () => {
+  const { app, current, timers } = connection();
+  app.disconnect();
+  assert.equal(timers.size, 1);
+  const [id, timer] = [...timers][0];
+  assert.equal(timer.delay, 1000);
+  timers.delete(id);
+  timer.callback();
+  assert.equal(current.pc.connectionState, 'closed');
+  assert.equal(timers.size, 0);
+  app.resume();
+  assert.equal(timers.size, 0);
 });
 
 test('retries continue with a capped delay and stop after forgetting or rejection', () => {

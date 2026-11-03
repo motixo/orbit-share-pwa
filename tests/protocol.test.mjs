@@ -9,19 +9,20 @@ const { invitation, validateInfo, validateItems } = runInNewContext(
     '\n({ invitation, validateInfo, validateItems })',
   { CryptoKey: webcrypto.CryptoKey, URL, atob, Uint8Array, location: { origin: 'https://share.example' } },
 );
-const address = { host: '192.168.1.2', port: 49152, fingerprint: Array(32).fill('00').join(':') };
+const address = { share: '12345678-1234-4123-8123-123456789abc', host: '192.168.1.2', port: 49152, fingerprint: Array(32).fill('00').join(':') };
 const token = 'ab'.repeat(32);
 
 test('QR invitations preserve credentials and reject other origins or public hosts', () => {
-  const payload = Buffer.concat([Buffer.from([1, 192, 168, 1, 2, 192, 0]), Buffer.alloc(32), Buffer.from(token, 'hex')]);
+  const payload = Buffer.concat([Buffer.from([2, 192, 168, 1, 2, 192, 0]), Buffer.alloc(32), Buffer.from(token, 'hex'), Buffer.from(address.share.replaceAll('-', ''), 'hex')]);
   const qr = 'https://share.example/#' + payload.toString('base64url');
   const info = invitation(qr);
   assert.equal(info.host, address.host);
   assert.equal(info.port, address.port);
   assert.equal(info.fingerprint, address.fingerprint);
   assert.equal(info.token, token);
+  assert.equal(info.share, address.share);
   assert.throws(() => invitation(qr.replace('share.example', 'other.example')));
-  for (const invalid of [{ host: '8.8.8.8' }, { port: 0 }, { token: 123 }, { mdns: 'example.com' }]) {
+  for (const invalid of [{ host: '8.8.8.8' }, { port: 0 }, { token: 123 }, { mdns: 'example.com' }, { share: '' }]) {
     assert.throws(() => validateInfo({ ...address, token, ...invalid }));
   }
 });
@@ -37,40 +38,31 @@ test('saved pairings retain their nonextractable key and reject exportable keys'
   assert.throws(() => validateInfo({ ...device, key: exportable }));
 });
 
-test('file lists keep ordinary files and unavailable downloads while rejecting malformed entries', () => {
+test('file lists preserve required metadata and reject incomplete or malformed entries', () => {
+  const item = { index: 0, name: 'photo.png', filename: 'photo.png', size: 2048,
+    downloadable: true, sender: 'Desktop', removable: true, kind: 'image' };
   const files = validateItems([
-    { index: 0, name: 'photo.png', size: 2048, text: null },
-    { index: 1, name: 'unavailable', size: null },
-    { index: 2, name: 'note.txt', size: 5, text: 'hello', source: 'mobile' },
+    item,
+    { ...item, index: 1, name: 'unavailable', size: null, downloadable: false },
+    { ...item, index: 2, name: 'note.txt', filename: 'uuid.txt', size: 5, text: 'hello',
+      sender: 'iPhone', downloadable: false, kind: 'text' },
   ]);
   assert.equal(files.length, 3);
   assert.equal(files[1].size, null);
+  assert.equal(files[1].downloadable, false);
   assert.equal(files[2].text, 'hello');
-  assert.equal(files[0].source, 'desktop');
-  assert.equal(files[2].source, 'mobile');
-  assert.equal(files[0].downloadable, true);
+  assert.equal(files[2].filename, 'uuid.txt');
+  assert.equal(files[2].sender, 'iPhone');
   assert.equal(files[2].downloadable, false);
-  assert.equal(files[0].sender, 'Desktop');
-  assert.equal(files[2].sender, 'Mobile');
-  assert.equal(files[0].removable, false);
   assert.equal(files[2].kind, 'text');
-  const received = validateItems([
-    { index: 3, name: 'Text preview', filename: 'uuid.html', size: 5, source: 'mobile', downloadable: true },
-    { index: 4, name: 'My upload', size: 5, source: 'mobile', downloadable: false, sender: 'iPhone', removable: true, kind: 'image' },
-  ]);
-  assert.equal(received[0].name, 'Text preview');
-  assert.equal(received[0].filename, 'uuid.html');
-  assert.equal(received[0].downloadable, true);
-  assert.equal(received[1].downloadable, false);
-  assert.equal(received[1].sender, 'iPhone');
-  assert.equal(received[1].removable, true);
-  assert.equal(received[1].kind, 'image');
-  for (const invalid of [null, [{ index: -1, name: 'bad', size: 0 }], [{ index: 0, name: 'bad', size: -1 }],
-    [{ index: 0, name: 'bad', size: 0, source: 'other' }],
-    [{ index: 0, name: 'bad', size: 0, downloadable: 'true' }],
-    [{ index: 0, name: 'bad', size: 0, sender: 123 }],
-    [{ index: 0, name: 'bad', size: 0, removable: 'true' }],
-    [{ index: 0, name: 'bad', size: 0, kind: 'unknown' }]]) {
-    assert.throws(() => validateItems(invalid));
+  for (const field of ['filename', 'downloadable', 'sender', 'removable', 'kind']) {
+    const incomplete = { ...item };
+    delete incomplete[field];
+    assert.throws(() => validateItems([incomplete]));
   }
+  for (const invalid of [
+    { index: -1 }, { size: -1 }, { downloadable: 'true' }, { sender: 123 },
+    { removable: 'true' }, { kind: 'unknown' }, { text: 123 },
+  ]) assert.throws(() => validateItems([{ ...item, ...invalid }]));
+  assert.throws(() => validateItems(null));
 });
