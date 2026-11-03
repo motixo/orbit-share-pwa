@@ -86,7 +86,6 @@ function renderPairs() {
   document.querySelector<HTMLButtonElement>('#pair-link-submit')!.disabled = scanButton.disabled;
   document.getElementById('connection-bar')!.hidden = !session?.ready;
   document.querySelector<HTMLButtonElement>('#disconnect')!.disabled = active > 0;
-  document.querySelector<HTMLButtonElement>('#forget-connected')!.disabled = active > 0 || !session?.info.key || !!session.forgotten;
   const device = document.getElementById('connected-device')!;
   device.hidden = !session?.ready;
   device.textContent = session?.ready ? `${'name' in session.info && session.info.name || 'Computer'} · ${session.info.host}` : '';
@@ -700,9 +699,6 @@ scanButton.addEventListener('click', async () => {
 });
 document.getElementById('cancel-scan')!.addEventListener('click', () => { stopCamera(); resumeConnection(); });
 document.getElementById('disconnect')!.addEventListener('click', disconnect);
-document.querySelector<HTMLButtonElement>('#forget-connected')!.addEventListener('click', event => {
-  if (session && event.currentTarget instanceof HTMLButtonElement) void forgetDevice(session.info, event.currentTarget);
-});
 
 const connectionForm = document.querySelector<HTMLFormElement>('#pair-link')!;
 const connectionInput = document.querySelector<HTMLInputElement>('#connection-link')!;
