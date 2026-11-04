@@ -200,13 +200,13 @@ test('cancelling restores pairing and late camera requests cannot take over a ne
   const cancel = element();
   const camera = element(true);
   const classes = new Set();
-  const video = { srcObject: null };
+  const video = { srcObject: null, pause() {} };
   let resolveCamera;
   let stopped = 0;
   runInNewContext(source.slice(begin, end), {
     scanning: false, camera: undefined, cameraGeneration: 0,
     scanButton: scan, statusElement: { textContent: '' }, reconnectTimer: undefined,
-    clearTimeout() {}, resumeConnection() {},
+    clearTimeout() {}, resumeConnection() {}, applyUpdate() {},
     navigator: { mediaDevices: { getUserMedia: () => new Promise(resolve => { resolveCamera = resolve; }) } },
     document: {
       body: { classList: { add: value => classes.add(value), remove: value => classes.delete(value) } },
@@ -233,6 +233,44 @@ test('cancelling restores pairing and late camera requests cannot take over a ne
   await next;
   assert.equal(stopped, 2);
   assert.equal(video.srcObject, null);
+});
+
+test('camera startup retries a stalled Safari stream without waiting forever for play()', async () => {
+  const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
+  const begin = source.indexOf('async function startCamera(');
+  const end = source.indexOf("scanButton.addEventListener('click'", begin);
+  for (const recover of [true, false]) {
+    let requested = 0, stopped = 0, now = 0;
+    let current = { replaceWith(video) { current = video; } };
+    const { startCamera } = runInNewContext(source.slice(begin, end) + '\n({ startCamera })', {
+      scanning: true, camera: undefined, cameraGeneration: 1,
+      performance: { now: () => now },
+      setTimeout(callback, delay) { now += delay; queueMicrotask(callback); },
+      navigator: { mediaDevices: { async getUserMedia() {
+        requested++;
+        const track = { readyState: 'live', muted: requested === 1 || !recover, stop() { stopped++; } };
+        return { getTracks: () => [track], getVideoTracks: () => [track] };
+      } } },
+      document: {
+        querySelector: () => current,
+        createElement: () => ({
+          readyState: 2, videoWidth: 1280, videoHeight: 720, pause() {},
+          play: () => new Promise(() => {}), replaceWith(video) { current = video; },
+        }),
+      },
+    });
+    if (recover) {
+      const video = await startCamera(1);
+      assert.equal(video, current);
+      assert.equal(video.muted, true);
+      assert.equal(video.playsInline, true);
+      assert.equal(stopped, 1);
+    } else {
+      await assert.rejects(startCamera(1), /Could not start camera/);
+      assert.equal(stopped, 2);
+    }
+    assert.equal(requested, 2);
+  }
 });
 
 test('opening Pair lists remembered devices without starting a connection', async () => {

@@ -15,6 +15,7 @@ function connection() {
     children: [], hidden: false, textContent: '',
     replaceChildren() { this.children = []; },
     append(...children) { this.children.push(...children); },
+    pause() {},
     addEventListener() {},
   });
   const getElement = id => {

@@ -907,10 +907,49 @@ function stopCamera() {
   cameraGeneration++;
   camera?.getTracks().forEach(track => track.stop());
   camera = undefined;
-  document.querySelector('video')!.srcObject = null;
+  const video = document.querySelector('video')!;
+  video.pause();
+  video.srcObject = null;
   document.getElementById('camera')!.hidden = true;
   document.body.classList.remove('scanning');
   applyUpdate();
+}
+
+async function startCamera(generation: number): Promise<HTMLVideoElement | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, ...(attempt ? {} : { width: { ideal: 1920 }, height: { ideal: 1080 } }) },
+      audio: false,
+    });
+    if (generation !== cameraGeneration) { stream.getTracks().forEach(track => track.stop()); return; }
+    camera = stream;
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.muted = true;
+    video.playsInline = true;
+    document.querySelector('video')!.replaceWith(video);
+    video.srcObject = stream;
+    let playbackError: unknown;
+    void video.play().catch(error => { playbackError = error; });
+    try {
+      const deadline = performance.now() + 6000;
+      while (scanning && generation === cameraGeneration) {
+        if (playbackError) throw playbackError;
+        const track = stream.getVideoTracks()[0];
+        if (!track || track.readyState === 'ended') throw new Error('Camera stopped. Try again.');
+        if (!track.muted && video.readyState >= 2 && video.videoWidth && video.videoHeight) return video;
+        if (performance.now() >= deadline) throw new Error('Could not start camera. Try again or use a connection link.');
+        await new Promise(resolve => setTimeout(resolve, 120));
+      }
+      return;
+    } catch (error) {
+      stream.getTracks().forEach(track => track.stop());
+      video.pause();
+      video.srcObject = null;
+      if (generation !== cameraGeneration) return;
+      if (attempt === 1) throw error;
+    }
+  }
 }
 
 scanButton.addEventListener('click', async () => {
@@ -923,15 +962,8 @@ scanButton.addEventListener('click', async () => {
     statusElement.textContent = '';
     clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: false,
-    });
-    if (generation !== cameraGeneration) { stream.getTracks().forEach(track => track.stop()); return; }
-    camera = stream;
-    const video = document.querySelector('video')!;
-    video.srcObject = camera;
-    await video.play();
+    const video = await startCamera(generation);
+    if (!video) return;
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) throw new Error('Could not open camera');
@@ -939,6 +971,7 @@ scanButton.addEventListener('click', async () => {
     try { if (window.BarcodeDetector) detector = new window.BarcodeDetector({ formats: ['qr_code'] }); } catch {}
     let frame = 0;
     while (scanning && generation === cameraGeneration) {
+      if (camera?.getVideoTracks()[0]?.readyState === 'ended') throw new Error('Camera stopped. Try again.');
       if (video.readyState >= 2 && video.videoWidth) {
         let value: string | undefined;
         if (detector) {
