@@ -241,9 +241,12 @@ test('camera startup retries a stalled Safari stream without waiting forever for
   const end = source.indexOf("scanButton.addEventListener('click'", begin);
   for (const recover of [true, false]) {
     let requested = 0, stopped = 0, now = 0;
-    let current = { replaceWith(video) { current = video; } };
+    const current = Object.assign(new EventTarget(), {
+      readyState: 2, videoWidth: 1280, videoHeight: 720, pause() {},
+      play: () => Promise.reject(new DOMException('Playback interrupted', 'AbortError')),
+    });
     const { startCamera } = runInNewContext(source.slice(begin, end) + '\n({ startCamera })', {
-      scanning: true, camera: undefined, cameraGeneration: 1,
+      scanning: true, camera: undefined, cameraGeneration: 1, DOMException,
       performance: { now: () => now },
       setTimeout(callback, delay) { now += delay; queueMicrotask(callback); },
       navigator: { mediaDevices: { async getUserMedia() {
@@ -253,10 +256,6 @@ test('camera startup retries a stalled Safari stream without waiting forever for
       } } },
       document: {
         querySelector: () => current,
-        createElement: () => ({
-          readyState: 2, videoWidth: 1280, videoHeight: 720, pause() {},
-          play: () => new Promise(() => {}), replaceWith(video) { current = video; },
-        }),
       },
     });
     if (recover) {

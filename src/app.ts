@@ -4,6 +4,7 @@ let session: ShareSession | undefined;
 let camera: MediaStream | undefined;
 let scanning = false;
 let cameraGeneration = 0;
+let resumeScan = false;
 let installPrompt: BeforeInstallPromptEvent | undefined;
 let active = 0;
 let pairs: PairedDevice[] = [];
@@ -912,10 +913,12 @@ function stopCamera() {
   video.srcObject = null;
   document.getElementById('camera')!.hidden = true;
   document.body.classList.remove('scanning');
-  applyUpdate();
 }
 
 async function startCamera(generation: number): Promise<HTMLVideoElement | undefined> {
+  const video = document.querySelector('video')!;
+  video.muted = true;
+  video.playsInline = true;
   for (let attempt = 0; attempt < 2; attempt++) {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' }, ...(attempt ? {} : { width: { ideal: 1920 }, height: { ideal: 1080 } }) },
@@ -923,14 +926,11 @@ async function startCamera(generation: number): Promise<HTMLVideoElement | undef
     });
     if (generation !== cameraGeneration) { stream.getTracks().forEach(track => track.stop()); return; }
     camera = stream;
-    const video = document.createElement('video');
-    video.autoplay = true;
-    video.muted = true;
-    video.playsInline = true;
-    document.querySelector('video')!.replaceWith(video);
     video.srcObject = stream;
     let playbackError: unknown;
-    void video.play().catch(error => { playbackError = error; });
+    const play = () => { void video.play().catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) playbackError = error; }); };
+    video.addEventListener('loadedmetadata', play, { once: true });
+    play();
     try {
       const deadline = performance.now() + 6000;
       while (scanning && generation === cameraGeneration) {
@@ -948,7 +948,7 @@ async function startCamera(generation: number): Promise<HTMLVideoElement | undef
       video.srcObject = null;
       if (generation !== cameraGeneration) return;
       if (attempt === 1) throw error;
-    }
+    } finally { video.removeEventListener('loadedmetadata', play); }
   }
 }
 
@@ -1140,6 +1140,7 @@ itemBox.addEventListener('drop', event => {
 });
 window.addEventListener('pagehide', event => {
   pageClosed = true;
+  resumeScan = scanning;
   stopCamera();
   clearTimeout(reconnectTimer);
   reconnectTimer = undefined;
@@ -1155,6 +1156,7 @@ window.addEventListener('pageshow', () => {
   pageClosed = false;
   downloadNavigationUntil = 0;
   if (session) { try { sessionStorage.removeItem('orbit-download-peer'); } catch {} }
+  if (resumeScan) { resumeScan = false; scanButton.click(); return; }
   resumeConnection();
   applyUpdate();
 });

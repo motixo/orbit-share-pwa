@@ -16,6 +16,7 @@ function connection() {
     replaceChildren() { this.children = []; },
     append(...children) { this.children.push(...children); },
     pause() {},
+    click() { this.clicked = true; },
     addEventListener() {},
   });
   const getElement = id => {
@@ -35,6 +36,7 @@ function connection() {
       refresh: refreshItems,
       closePage() { pageClosed = true; },
       previewDownload() { downloadNavigationUntil = 6000; },
+      scanCamera() { scanning = true; },
       schedule: scheduleReconnect, disconnected, resume: resumeConnection, stop: stopConnection,
     })`, {
     document: { getElementById: getElement, querySelector: selector => getElement(selector), createElement: makeElement, addEventListener() {}, body: { classList: { remove() {} } } },
@@ -93,6 +95,15 @@ test('closing the page still sends an intentional disconnect', () => {
   events.get('pagehide')({ persisted: false });
   assert.deepEqual(current.control.sent, ['disconnect']);
   assert.equal(current.retry, false);
+});
+
+test('returning after a camera page transition restores scanning instead of reconnecting', () => {
+  const { app, events, scan } = connection();
+  app.scanCamera();
+  app.attempt(() => assert.fail('camera restore started a connection'));
+  events.get('pagehide')({ persisted: true });
+  events.get('pageshow')();
+  assert.equal(scan.clicked, true);
 });
 
 test('disconnect keeps saved devices, clears retries, and hides the connected view', () => {
