@@ -445,8 +445,6 @@ function drain(dc: RTCDataChannel, signal: AbortSignal): Promise<void> {
 }
 
 async function downloadSink(): Promise<DownloadSink & { save(name: string): void }> {
-  if (!downloadReady) throw new Error('Downloads need service worker support.');
-  await downloadReady;
   const writer = new Worker('/download-worker.js', { type: 'module' });
   let stopped = false;
   let file: File | undefined;
@@ -515,9 +513,17 @@ async function downloadSink(): Promise<DownloadSink & { save(name: string): void
     },
     save(name) {
       if (stopped || !file) throw new Error('Download unavailable');
+      const types: Record<string, string> = {
+        png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+        webp: 'image/webp', avif: 'image/avif', heic: 'image/heic', heif: 'image/heif',
+        mov: 'video/quicktime', mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm',
+      };
+      const extension = name.split('.').pop()!.toLowerCase();
+      const type = Object.hasOwn(types, extension) ? types[extension] : 'application/octet-stream';
       const link = document.createElement('a');
-      link.href = '/downloads/' + file.name + '/' + encodeURIComponent(name);
-      // Download attributes bypass the service worker in Chromium.
+      // Keep the disk-backed URL valid for Safari's download handoff.
+      link.href = URL.createObjectURL(new File([file], name, { type }));
+      link.download = name;
       document.body.append(link);
       try { link.click(); } finally { link.remove(); }
       stopped = true;

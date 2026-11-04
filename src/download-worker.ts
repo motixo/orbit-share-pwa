@@ -63,6 +63,7 @@ downloads.addEventListener('message', event => {
         access.close();
         access = undefined;
         const file = await entry.getFile();
+        if (file.size !== offset) throw new Error('Incomplete saved file');
         downloads.postMessage({ file });
         return;
       }

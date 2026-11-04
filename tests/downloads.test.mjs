@@ -180,42 +180,37 @@ test('download writes batch small chunks and flush tails and nonsequential posit
   assert.equal(writes[0].bytes[batch - 1], 31);
 });
 
-test('saved downloads preserve media names and types and remove temporary files after completion or cancellation', async () => {
-  const source = readFileSync(new URL('../dist/sw.js', import.meta.url), 'utf8');
-  const id = '12345678-1234-4123-8123-123456789abc';
-  for (const [name, type, fallback, cancel] of [
-    ['IMG_0228.mov', 'video/quicktime', 'IMG_0228.mov', false],
-    ['Screenshot.PNG', 'image/png', 'Screenshot.PNG', false],
-    ['عکس.png', 'image/png', '___.png', false],
-    ['unknown.bin', 'application/octet-stream', 'unknown.bin', false],
-    ['photo.png', 'image/png', 'photo.png', true],
+test('saved files keep their media names and bytes without a service-worker download request', async () => {
+  const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
+  const begin = source.indexOf('async function downloadSink(');
+  const end = source.indexOf('\nfunction pumpRequests(', begin);
+  for (const [name, type] of [
+    ['IMG_0228.mov', 'video/quicktime'],
+    ['Screenshot.PNG', 'image/png'],
+    ['عکس.png', 'image/png'],
+    ['unknown.bin', 'application/octet-stream'],
   ]) {
-    let fetchHandler, response, lifetime, removed = false;
-    const directory = {
-      async getFileHandle(name) { assert.equal(name, id); return { async getFile() { return new File(['content'], id); } }; },
-      async removeEntry(name) { assert.equal(name, id); removed = true; },
-    };
-    const self = {
-      location: { origin: 'https://share.example', hostname: 'share.example' },
-      addEventListener(name, handler) { if (name === 'fetch') fetchHandler = handler; },
-    };
-    runInNewContext(source, {
-      self, URL, Response, ReadableStream,
-      navigator: { storage: { async getDirectory() { return { async getDirectoryHandle() { return directory; } }; } } },
+    const stored = new File(['content'], '12345678-1234-4123-8123-123456789abc');
+    let saved, clicked = false;
+    const link = { click() { clicked = true; }, remove() {} };
+    class Worker {
+      postMessage(message) { queueMicrotask(() => this.onmessage({ data: message.type === 'finish' ? { file: stored } : {} })); }
+      terminate() {}
+    }
+    const { downloadSink } = runInNewContext(source.slice(begin, end) + '\n({ downloadSink })', {
+      Worker, File, setTimeout, clearTimeout,
+      URL: { createObjectURL(file) { saved = file; return 'blob:received-file'; } },
+      document: { createElement() { return link; }, body: { append() {} } },
     });
-    fetchHandler({
-      request: { url: 'https://share.example/downloads/' + id + '/' + encodeURIComponent(name), method: 'GET' },
-      respondWith(value) { response = value; }, waitUntil(value) { lifetime = value; },
-    });
-    const download = await response;
-    assert.equal(removed, false);
-    assert.equal(download.headers.get('Content-Length'), '7');
-    assert.equal(download.headers.get('Content-Type'), type);
-    assert.equal(download.headers.get('Content-Disposition'), `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`);
-    if (cancel) await download.body.cancel();
-    else assert.equal(await download.text(), 'content');
-    await lifetime;
-    assert.equal(removed, true);
+    const sink = await downloadSink();
+    await sink.finish();
+    sink.save(name);
+    assert.equal(clicked, true);
+    assert.equal(link.href, 'blob:received-file');
+    assert.equal(link.download, name);
+    assert.equal(saved.name, name);
+    assert.equal(saved.type, type);
+    assert.equal(await saved.text(), 'content');
   }
 });
 
