@@ -12,6 +12,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let retryDelay = 1000;
 let pageClosed = false;
+let downloadNavigationUntil = 0;
 let downloadReady: Promise<void> | undefined;
 let applyUpdate = () => {};
 
@@ -524,7 +525,10 @@ async function downloadSink(): Promise<DownloadSink & { save(name: string): void
       // Keep the disk-backed URL valid for Safari's download handoff.
       link.href = URL.createObjectURL(new File([file], name, { type }));
       link.download = name;
+      link.target = '_blank';
+      link.rel = 'noopener';
       document.body.append(link);
+      downloadNavigationUntil = performance.now() + 5000;
       try { link.click(); } finally { link.remove(); }
       stopped = true;
       writer.terminate();
@@ -1089,14 +1093,26 @@ itemBox.addEventListener('drop', event => {
   if (files.length) void busy(chooseFiles, () => uploadFiles(files));
   else if (text.trim()) void busy(pasteClipboard, () => sendText(text));
 });
-window.addEventListener('pagehide', () => {
+window.addEventListener('pagehide', event => {
   pageClosed = true;
   stopCamera();
   clearTimeout(reconnectTimer);
   reconnectTimer = undefined;
-  if (session) stopConnection(session, true);
+  if (!session) return;
+  const downloadPreview = performance.now() < downloadNavigationUntil;
+  if (downloadPreview && session.retry && !session.forgotten) {
+    try { sessionStorage.setItem('orbit-download-peer', JSON.stringify({ fingerprint: session.info.fingerprint, share: session.info.share })); } catch {}
+  }
+  if (event.persisted || downloadPreview) disconnected(session);
+  else stopConnection(session, true);
 });
-window.addEventListener('pageshow', () => { pageClosed = false; resumeConnection(); });
+window.addEventListener('pageshow', () => {
+  pageClosed = false;
+  downloadNavigationUntil = 0;
+  if (session) { try { sessionStorage.removeItem('orbit-download-peer'); } catch {} }
+  resumeConnection();
+  applyUpdate();
+});
 window.addEventListener('online', resumeConnection);
 navigator.connection?.addEventListener('change', resumeConnection);
 document.addEventListener('visibilitychange', () => {
@@ -1192,7 +1208,7 @@ if ('serviceWorker' in navigator) {
   } catch {}
   applyUpdate = () => {
     if ((!pending && !changed) || reloading) return;
-    if (document.visibilityState !== 'visible') return;
+    if (pageClosed || document.visibilityState !== 'visible') return;
     if (active || scanning || session?.connecting) { notify('Update ready · waiting'); return; }
     reloading = true;
     notify('Updating…');
@@ -1303,6 +1319,7 @@ async function start() {
   if (started) return;
   started = true;
   let initial: DeviceInfo | undefined;
+  let resume = false;
   if (location.hash) {
     try { initial = invitation(location.href); }
     catch (error) { statusElement.textContent = errorMessage(error); }
@@ -1326,6 +1343,15 @@ async function start() {
     sessionStorage.removeItem('orbit-update-peer');
     if (!initial && previous) initial = pairs.find(pair => pair.fingerprint === previous);
   } catch {}
+  try {
+    const previous = sessionStorage.getItem('orbit-download-peer');
+    sessionStorage.removeItem('orbit-download-peer');
+    const peer: unknown = previous ? JSON.parse(previous) : undefined;
+    if (!initial && isRecord(peer)) {
+      initial = pairs.find(pair => pair.fingerprint === peer.fingerprint && pair.share === peer.share);
+      resume = true;
+    }
+  } catch {}
   if (session || scanning) return;
-  if (initial) await connect(initial);
+  if (initial) await connect(initial, resume);
 }

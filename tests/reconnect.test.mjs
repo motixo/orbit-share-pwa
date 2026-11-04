@@ -8,6 +8,8 @@ function connection() {
   const boundary = source.indexOf("scanButton.addEventListener('click'");
   assert.ok(boundary > 0);
   const timers = new Map();
+  const events = new Map();
+  const storage = new Map();
   const elements = new Map();
   const makeElement = () => ({
     children: [], hidden: false, textContent: '',
@@ -20,7 +22,8 @@ function connection() {
     return elements.get(id);
   };
   let next = 0;
-  const app = runInNewContext(source.slice(0, boundary) + `
+  const lifecycle = source.slice(source.indexOf("window.addEventListener('pagehide'"), source.indexOf('const appDisplayMode ='));
+  const app = runInNewContext(source.slice(0, boundary) + lifecycle + `
     ({
       select(value) { session = value; },
       attempt(callback) { connect = callback; },
@@ -30,9 +33,13 @@ function connection() {
       disconnect,
       refresh: refreshItems,
       closePage() { pageClosed = true; },
+      previewDownload() { downloadNavigationUntil = 6000; },
       schedule: scheduleReconnect, disconnected, resume: resumeConnection, stop: stopConnection,
     })`, {
-    document: { getElementById: getElement, querySelector: selector => getElement(selector), createElement: makeElement, body: { classList: { remove() {} } } },
+    document: { getElementById: getElement, querySelector: selector => getElement(selector), createElement: makeElement, addEventListener() {}, body: { classList: { remove() {} } } },
+    window: { addEventListener(type, callback) { events.set(type, callback); } },
+    navigator: {},
+    sessionStorage: { setItem(key, value) { storage.set(key, value); }, removeItem(key) { storage.delete(key); } },
     performance: { now: () => 1000 },
     setTimeout(callback, delay) { const id = ++next; timers.set(id, { callback, delay }); return id; },
     clearTimeout(id) { timers.delete(id); },
@@ -51,12 +58,41 @@ function connection() {
       removeEventListener(type, callback) { listeners.get(type)?.delete(callback); },
       emit(type, data) { for (const callback of [...(listeners.get(type) || [])]) callback({ data }); },
     },
-    info: { fingerprint: 'desktop' }, ready: true, retry: true, connecting: false,
+    info: { fingerprint: 'desktop', share: 'shelf' }, ready: true, retry: true, connecting: false,
   };
   app.select(current);
   app.list(() => Promise.resolve());
-  return { app, current, timers, element: getElement('connected'), paired: getElement('paired'), scan: getElement('#scan') };
+  return { app, current, timers, events, storage, element: getElement('connected'), paired: getElement('paired'), scan: getElement('#scan') };
 }
+
+test('returning from a cached page or a download preview resumes without sending an intentional disconnect', () => {
+  for (const preview of [false, true]) {
+    const { app, current, timers, events, storage } = connection();
+    let attempts = 0;
+    app.attempt((info, retry) => { assert.equal(info, current.info); assert.equal(retry, true); attempts++; });
+    app.schedule(current);
+    if (preview) app.previewDownload();
+    events.get('pagehide')({ persisted: !preview });
+    assert.equal(current.retry, true);
+    assert.equal(current.pc.connectionState, 'closed');
+    assert.deepEqual(current.control.sent, []);
+    assert.equal(timers.size, 0);
+    if (preview) assert.deepEqual(JSON.parse(storage.get('orbit-download-peer')), current.info);
+    else assert.equal(storage.size, 0);
+    app.resume();
+    assert.equal(attempts, 0);
+    events.get('pageshow')();
+    assert.equal(attempts, 1);
+    assert.equal(storage.size, 0);
+  }
+});
+
+test('closing the page still sends an intentional disconnect', () => {
+  const { current, events } = connection();
+  events.get('pagehide')({ persisted: false });
+  assert.deepEqual(current.control.sent, ['disconnect']);
+  assert.equal(current.retry, false);
+});
 
 test('disconnect keeps saved devices, clears retries, and hides the connected view', () => {
   const { app, current, timers, element, paired } = connection();

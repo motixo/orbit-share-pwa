@@ -198,7 +198,7 @@ test('saved files keep their media names and bytes without a service-worker down
       terminate() {}
     }
     const { downloadSink } = runInNewContext(source.slice(begin, end) + '\n({ downloadSink })', {
-      Worker, File, setTimeout, clearTimeout,
+      Worker, File, setTimeout, clearTimeout, performance, downloadNavigationUntil: 0,
       URL: { createObjectURL(file) { saved = file; return 'blob:received-file'; } },
       document: { createElement() { return link; }, body: { append() {} } },
     });
@@ -208,6 +208,8 @@ test('saved files keep their media names and bytes without a service-worker down
     assert.equal(clicked, true);
     assert.equal(link.href, 'blob:received-file');
     assert.equal(link.download, name);
+    assert.equal(link.target, '_blank');
+    assert.equal(link.rel, 'noopener');
     assert.equal(saved.name, name);
     assert.equal(saved.type, type);
     assert.equal(await saved.text(), 'content');
