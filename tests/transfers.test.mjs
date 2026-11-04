@@ -3,6 +3,40 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 
+test('completed ticket requests let the server close the response channel', async () => {
+  const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
+  const begin = source.indexOf('async function requestControl(');
+  const end = source.indexOf('\nasync function busy(', begin);
+  let released = 0;
+  const dc = Object.assign(new EventTarget(), {
+    readyState: 'open', sent: [],
+    send(value) { this.sent.push(value); },
+    close() {
+      this.readyState = 'closed';
+      this.dispatchEvent(new Event('close'));
+    },
+  });
+  const { requestControl } = runInNewContext(source.slice(begin, end) + '\n({ requestControl })', {
+    session: { ready: true, pc: { createDataChannel: () => dc } },
+    requestSlot: async () => () => { released++; },
+    Blob, ArrayBuffer, AbortController, setTimeout, clearTimeout,
+    isRecord: value => value !== null && typeof value === 'object',
+  });
+  const pending = requestControl('croc-upload', { name: 'photo.jpg', size: 42 });
+  await Promise.resolve();
+  dc.dispatchEvent(new Event('open'));
+  for (const data of [
+    JSON.stringify({ type: 'response', status: 200, size: 2 }),
+    new TextEncoder().encode('{}').buffer,
+    JSON.stringify({ type: 'end' }),
+  ]) dc.dispatchEvent(new MessageEvent('message', { data }));
+  assert.equal(await (await pending).text(), '{}');
+  assert.equal(dc.readyState, 'open');
+  assert.equal(released, 0);
+  dc.close();
+  assert.equal(released, 1);
+});
+
 test('uploads and dropped text preserve payloads and accept large files while rejecting oversized or empty text', async () => {
   const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
   const begin = source.indexOf('async function uploadFiles(');

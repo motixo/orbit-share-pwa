@@ -698,7 +698,6 @@ async function requestControl(action: ControlAction, fields: RequestFields = {},
               abort.abort();
               if (header.status < 200 || header.status >= 300) reject(new Error((await body.text()).slice(0, 200) || 'Transfer failed'));
               else resolve(body);
-              dc.close();
             } else throw new Error('Invalid response');
           } else {
             if (!header || !(event.data instanceof ArrayBuffer)) throw new Error('Invalid response');
