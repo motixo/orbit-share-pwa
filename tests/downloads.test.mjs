@@ -127,7 +127,7 @@ test('finalized downloads can still be aborted before they are saved', async () 
     terminate() { this.terminated = true; }
   }
   const { downloadSink } = runInNewContext(source.slice(begin, end) + '\n({ downloadSink })', {
-    Worker, downloadReady: Promise.resolve(), setTimeout, clearTimeout,
+    Worker, setTimeout, clearTimeout,
   });
   const sink = await downloadSink();
   assert.equal(await sink.finish(), file);
@@ -161,7 +161,7 @@ test('download writes batch small chunks and flush tails and nonsequential posit
     terminate() {}
   }
   const { downloadSink } = runInNewContext(source.slice(begin, end) + '\n({ downloadSink })', {
-    Worker, downloadReady: Promise.resolve(), setTimeout, clearTimeout,
+    Worker, setTimeout, clearTimeout,
   });
   const sink = await downloadSink();
   for (let index = 0; index < 32; index++) {

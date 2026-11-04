@@ -14,7 +14,6 @@ let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let retryDelay = 1000;
 let pageClosed = false;
 let downloadNavigationUntil = 0;
-let downloadReady: Promise<void> | undefined;
 let applyUpdate = () => {};
 
 function scheduleReconnect(current: ShareSession) {
@@ -1340,7 +1339,7 @@ if ('serviceWorker' in navigator) {
       else { offline.textContent = 'Offline setup failed. Reload to retry.'; offline.hidden = false; }
     } finally { preparing.delete(target); }
   };
-  downloadReady = navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).then(registration => {
+  void navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).then(registration => {
     const waiting = () => { if (registration.waiting) void prepare(registration.waiting, true); };
     const installing = () => {
       const target = registration.installing;
@@ -1359,25 +1358,9 @@ if ('serviceWorker' in navigator) {
     setInterval(check, 15 * 60 * 1000);
     check();
     return navigator.serviceWorker.ready;
-  }).then(async registration => {
+  }).then(registration => {
     if (registration.active) void prepare(registration.active, false);
-    if (navigator.serviceWorker.controller) return;
-    await new Promise<void>((resolve, reject) => {
-      const changed = () => {
-        if (!navigator.serviceWorker.controller) return;
-        clearTimeout(timer);
-        navigator.serviceWorker.removeEventListener('controllerchange', changed);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        navigator.serviceWorker.removeEventListener('controllerchange', changed);
-        reject(new Error('Downloads unavailable. Reload to retry.'));
-      }, 10000);
-      navigator.serviceWorker.addEventListener('controllerchange', changed);
-      changed();
-    });
-  });
-  void downloadReady.catch(() => { offline.textContent = 'Offline setup failed. Reload to retry.'; offline.hidden = false; });
+  }).catch(() => { offline.textContent = 'Offline setup failed. Reload to retry.'; offline.hidden = false; });
 }
 async function start() {
   if (started) return;

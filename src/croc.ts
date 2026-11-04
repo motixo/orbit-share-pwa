@@ -21,8 +21,9 @@ export async function transfer(
   pc: RTCPeerConnection, ticket: CrocTicket, signal: AbortSignal,
   progress: (done: number, total: number) => void, prepared?: PreparedFile[], sink?: DownloadSink,
 ): Promise<Blob> {
-  if (!/^[a-f0-9-]{36}$/.test(ticket.id) || !/^[a-f0-9]{64}$/.test(ticket.secret) ||
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(ticket.id) || !/^[a-f0-9]{64}$/.test(ticket.secret) ||
     !/^[a-f0-9]{64}$/.test(ticket.password) || !/^\d{1,5}$/.test(ticket.port) ||
+    Number(ticket.port) < 1 || Number(ticket.port) > 65535 ||
     !Number.isSafeInteger(ticket.size) || ticket.size < 0) throw new Error('Invalid transfer');
   const dispose = route(ticket.id, pc);
   const settings = {
@@ -35,7 +36,7 @@ export async function transfer(
   let downloadHash: Awaited<ReturnType<typeof startHash>> | undefined;
   try {
     if (prepared) {
-      if (ticket.verify !== true || prepared.length !== 1) throw new Error('Streaming upload unavailable');
+      if (prepared.length !== 1) throw new Error('Invalid upload');
       const hash = await startUploadHash(prepared[0].file, signal);
       try {
         await sendFiles({ ...options, files: prepared, callbacks: { onProgress } });

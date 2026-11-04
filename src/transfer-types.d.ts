@@ -1,4 +1,4 @@
-export interface CrocTicket { id: string; secret: string; password: string; port: string; name: string; size: number; verify: boolean }
+export interface CrocTicket { id: string; secret: string; password: string; port: string; name: string; size: number }
 
 export interface DownloadSink {
   prepare(size: number): Promise<void>;
