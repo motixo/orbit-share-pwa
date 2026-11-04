@@ -301,6 +301,7 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
   const pc = peer;
   const current: ShareSession = { pc, control, info, ready: false, connecting: true, retry, lastSeen: performance.now() };
   let finishPairing = () => {};
+  let setupError = '';
   session = current;
   renderPairs();
   control.addEventListener('message', event => {
@@ -361,7 +362,7 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
           current.error = errorMessage(error);
           current.retry = false;
           disconnected(current);
-        }
+        } else setupError = errorMessage(error);
         finishPairing();
       });
     }
@@ -441,7 +442,7 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
     document.getElementById('pair-help')!.hidden = false;
     document.getElementById('use-link')!.textContent = 'Use a connection link';
     document.getElementById('use-link')!.setAttribute('aria-expanded', 'false');
-    statusElement.textContent = '';
+    statusElement.textContent = setupError;
   } catch (error) {
     if (session !== current) return;
     current.error = errorMessage(error);

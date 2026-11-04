@@ -124,51 +124,58 @@ test('connection rejections forget a device only when the known server explicitl
   }
 });
 
-test('QR connections wait for a paired identity before requesting items', async () => {
+test('QR connections wait for identity and preserve pairing storage failures', async () => {
   const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
   const begin = source.indexOf('async function connect(');
   const end = source.indexOf('\nfunction drain(', begin);
-  const timers = new Set();
-  let peer, listed = 0, completed = false, ready;
-  const waiting = new Promise(resolve => { ready = resolve; });
-  class Peer extends EventTarget {
-    connectionState = 'connected';
-    control = Object.assign(new EventTarget(), {
-      readyState: 'open',
-      send() {
-        this.dispatchEvent(new MessageEvent('message', { data: 'ready' }));
-        this.dispatchEvent(new MessageEvent('message', { data: '{"type":"items","revision":1}' }));
-        ready();
+  for (const saveFails of [false, true]) {
+    const status = { textContent: '' };
+    const timers = new Set();
+    let peer, listed = 0, completed = false, ready;
+    const waiting = new Promise(resolve => { ready = resolve; });
+    class Peer extends EventTarget {
+      connectionState = 'connected';
+      control = Object.assign(new EventTarget(), {
+        readyState: 'open',
+        send() {
+          this.dispatchEvent(new MessageEvent('message', { data: 'ready' }));
+          this.dispatchEvent(new MessageEvent('message', { data: '{"type":"items","revision":1}' }));
+          ready();
+        },
+      });
+      constructor() { super(); peer = this; }
+      createDataChannel() { return this.control; }
+      async createOffer() { return {}; }
+      async setLocalDescription() { this.localDescription = { sdp: 'a=ice-pwd:' + 'a'.repeat(24) }; }
+      async setRemoteDescription() { this.control.dispatchEvent(new Event('open')); }
+    }
+    const app = runInNewContext(source.slice(0, source.indexOf('async function pairStore(')) +
+      source.slice(begin, end) + '\n({ connect })', {
+      RTCPeerConnection: Peer, performance: { now: () => 0 },
+      document: { getElementById: id => id === 'status' ? status : { setAttribute() {} }, querySelector: () => ({}) },
+      setTimeout(callback) { timers.add(callback); return callback; },
+      clearTimeout(callback) { timers.delete(callback); }, setInterval() {}, clearInterval() {},
+      validateInfo: value => value, isRecord: value => value !== null && typeof value === 'object',
+      stopCamera() {}, clearThumbnails() {}, renderPairs() {}, applyUpdate() {},
+      async rememberDevice(message, current) {
+        current.info = { ...current.info, key: {} };
+        if (saveFails) throw new Error('Could not save device');
       },
+      async refreshItems() { listed++; }, errorMessage: error => error.message,
     });
-    constructor() { super(); peer = this; }
-    createDataChannel() { return this.control; }
-    async createOffer() { return {}; }
-    async setLocalDescription() { this.localDescription = { sdp: 'a=ice-pwd:' + 'a'.repeat(24) }; }
-    async setRemoteDescription() { this.control.dispatchEvent(new Event('open')); }
+    const connecting = app.connect({ token: 'invitation' }).then(() => { completed = true; });
+    await waiting;
+    await Promise.resolve();
+    assert.equal(completed, false);
+    assert.equal(listed, 0);
+    assert.equal(timers.size, 1);
+    peer.control.dispatchEvent(new MessageEvent('message', { data: '{"type":"paired"}' }));
+    await connecting;
+    assert.equal(completed, true);
+    assert.equal(listed, 1);
+    assert.equal(timers.size, 0);
+    assert.equal(status.textContent, saveFails ? 'Could not save device' : '');
   }
-  const app = runInNewContext(source.slice(0, source.indexOf('async function pairStore(')) +
-    source.slice(begin, end) + '\n({ connect })', {
-    RTCPeerConnection: Peer, performance: { now: () => 0 },
-    document: { getElementById: () => ({ setAttribute() {} }), querySelector: () => ({}) },
-    setTimeout(callback) { timers.add(callback); return callback; },
-    clearTimeout(callback) { timers.delete(callback); }, setInterval() {}, clearInterval() {},
-    validateInfo: value => value, isRecord: value => value !== null && typeof value === 'object',
-    stopCamera() {}, clearThumbnails() {}, renderPairs() {}, applyUpdate() {},
-    async rememberDevice(message, current) { current.info = { ...current.info, key: {} }; },
-    async refreshItems() { listed++; }, errorMessage: error => error.message,
-  });
-  const connecting = app.connect({ token: 'invitation' }).then(() => { completed = true; });
-  await waiting;
-  await Promise.resolve();
-  assert.equal(completed, false);
-  assert.equal(listed, 0);
-  assert.equal(timers.size, 1);
-  peer.control.dispatchEvent(new MessageEvent('message', { data: '{"type":"paired"}' }));
-  await connecting;
-  assert.equal(completed, true);
-  assert.equal(listed, 1);
-  assert.equal(timers.size, 0);
 });
 
 function element(hidden = false) {
