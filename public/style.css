@@ -32,6 +32,7 @@ body.scanning :is(#scan, #paired, #pair-help, #use-link, #pair-link, #offline) {
 #camera video { height: min(70dvh, 32rem); max-height: none; background: #000; object-fit: contain; }
 [hidden] { display: none !important; }
 #offline { opacity: .6; }
+#update-notice { position: fixed; z-index: 10; bottom: 1rem; left: 50%; transform: translateX(-50%); box-sizing: border-box; max-width: calc(100% - 2rem); margin: 0; padding: .75rem 1rem; border: 1px solid light-dark(#ddd, #484848); border-radius: .75rem; background: light-dark(#fff, #292929); font-size: .875rem; text-align: center; }
 #install-help { margin: .5rem 0 0; }
 #skip-install { display: inline-block; margin-top: .75rem; color: inherit; }
 #about-sharing, #report-issue { max-width: 30rem; margin: 2rem auto 0; font-size: .8rem; line-height: 1.6; opacity: .7; }

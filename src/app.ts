@@ -13,6 +13,7 @@ let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let retryDelay = 1000;
 let pageClosed = false;
 let downloadReady: Promise<void> | undefined;
+let applyUpdate = () => {};
 
 function scheduleReconnect(current: ShareSession) {
   if (session !== current || current.forgotten || !current.retry || pageClosed || scanning || reconnectTimer !== undefined) return;
@@ -418,6 +419,7 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
   } finally {
     current.connecting = false;
     if (session === current) { scanButton.disabled = active > 0; renderPairs(); }
+    applyUpdate();
   }
 }
 
@@ -696,7 +698,7 @@ async function busy(button: HTMLButtonElement, action: () => Promise<void>) {
   renderPairs();
   try { await action(); statusElement.textContent = 'Done'; }
   catch (error) { statusElement.textContent = errorMessage(error) || 'Transfer failed'; }
-  finally { active--; button.disabled = false; scanButton.disabled = active > 0; renderPairs(); }
+  finally { active--; button.disabled = false; scanButton.disabled = active > 0; renderPairs(); applyUpdate(); }
 }
 
 function progress(label: string): TransferProgress {
@@ -886,6 +888,7 @@ function stopCamera() {
   document.querySelector('video')!.srcObject = null;
   document.getElementById('camera')!.hidden = true;
   document.body.classList.remove('scanning');
+  applyUpdate();
 }
 
 scanButton.addEventListener('click', async () => {
@@ -1165,8 +1168,88 @@ updateInstallation();
 
 if ('serviceWorker' in navigator) {
   const offline = document.getElementById('offline')!;
+  const notice = document.getElementById('update-notice')!;
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
-  downloadReady = navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready).then(async () => {
+  let controlled = Boolean(navigator.serviceWorker.controller);
+  let pending: ServiceWorker | undefined;
+  let reloading = false;
+  let changed = false;
+  const prepared = new WeakSet<ServiceWorker>();
+  const preparing = new WeakSet<ServiceWorker>();
+  const notify = (text: string) => { notice.textContent = text; notice.hidden = false; };
+  try {
+    if (sessionStorage.getItem('orbit-updated')) {
+      sessionStorage.removeItem('orbit-updated');
+      notify('Updated');
+      setTimeout(() => { notice.hidden = true; }, 4000);
+    }
+  } catch {}
+  applyUpdate = () => {
+    if ((!pending && !changed) || reloading) return;
+    if (document.visibilityState !== 'visible') return;
+    if (active || scanning || session?.connecting) { notify('Update ready · waiting'); return; }
+    reloading = true;
+    notify('Updating…');
+    try {
+      if (session?.ready) sessionStorage.setItem('orbit-update-peer', session.info.fingerprint);
+    } catch {}
+    if (changed) {
+      try { sessionStorage.setItem('orbit-updated', 'true'); } catch {}
+      location.reload();
+    }
+    else pending!.postMessage({ type: 'activate' });
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (controlled) { changed = true; reloading = false; applyUpdate(); }
+    controlled = true;
+  });
+  const prepare = async (target: ServiceWorker, update: boolean) => {
+    if (prepared.has(target) || preparing.has(target)) return;
+    preparing.add(target);
+    if (update) notify('Downloading update…');
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const channel = new MessageChannel();
+        const finish = (ready: boolean) => {
+          clearTimeout(timer);
+          channel.port1.close();
+          channel.port2.close();
+          ready ? resolve() : reject(new Error('Offline setup failed'));
+        };
+        const timer = setTimeout(() => finish(false), 30000);
+        channel.port1.onmessage = event => finish(event.data?.ready === true);
+        try { target.postMessage({ type: 'prepare', update }, [channel.port2]); }
+        catch { finish(false); }
+      });
+      prepared.add(target);
+      if (update) { pending = target; applyUpdate(); }
+      else { offline.textContent = 'Ready offline'; offline.hidden = local; }
+    } catch {
+      if (update) notify('Update unavailable · retrying later');
+      else { offline.textContent = 'Offline setup failed. Reload to retry.'; offline.hidden = false; }
+    } finally { preparing.delete(target); }
+  };
+  downloadReady = navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).then(registration => {
+    const waiting = () => { if (registration.waiting) void prepare(registration.waiting, true); };
+    const installing = () => {
+      const target = registration.installing;
+      target?.addEventListener('statechange', () => { if (target.state === 'installed') waiting(); });
+    };
+    registration.addEventListener('updatefound', installing);
+    installing();
+    waiting();
+    const check = () => {
+      if (document.visibilityState !== 'visible') return;
+      applyUpdate();
+      waiting();
+      void registration.update().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', check);
+    setInterval(check, 15 * 60 * 1000);
+    check();
+    return navigator.serviceWorker.ready;
+  }).then(async registration => {
+    if (registration.active) void prepare(registration.active, false);
     if (navigator.serviceWorker.controller) return;
     await new Promise<void>((resolve, reject) => {
       const changed = () => {
@@ -1183,10 +1266,7 @@ if ('serviceWorker' in navigator) {
       changed();
     });
   });
-  void downloadReady.then(() => {
-    offline.textContent = 'Ready offline';
-    offline.hidden = local;
-  }).catch(() => { offline.textContent = 'Offline setup failed. Reload to retry.'; offline.hidden = false; });
+  void downloadReady.catch(() => { offline.textContent = 'Offline setup failed. Reload to retry.'; offline.hidden = false; });
 }
 async function start() {
   if (started) return;
@@ -1209,6 +1289,11 @@ async function start() {
       } catch { return []; }
     }).sort((a, b) => b.last - a.last);
     renderPairs();
+  } catch {}
+  try {
+    const previous = sessionStorage.getItem('orbit-update-peer');
+    sessionStorage.removeItem('orbit-update-peer');
+    if (!initial && previous) initial = pairs.find(pair => pair.fingerprint === previous);
   } catch {}
   if (session || scanning) return;
   if (initial) await connect(initial);
