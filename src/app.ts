@@ -247,9 +247,20 @@ async function deviceName() {
     const info = await navigator.userAgentData?.getHighEntropyValues(['model']);
     if (info?.model?.trim()) return info.model.trim().slice(0, 80);
   } catch {}
-  if (/iPhone/.test(navigator.userAgent)) return 'iPhone';
-  if (/iPad/.test(navigator.userAgent)) return 'iPad';
-  return '';
+  const agent = navigator.userAgent;
+  if (/iPhone|iPod/.test(agent)) return 'iPhone';
+  if (/iPad/.test(agent) || navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return 'iPad';
+  if (/Android/.test(agent)) return 'Android';
+  const platform = /CrOS/.test(agent) ? 'ChromeOS'
+    : /Windows/.test(agent) ? 'Windows'
+    : /Macintosh|Mac OS X/.test(agent) ? 'Mac'
+    : /Linux/.test(agent) ? 'Linux' : '';
+  const browser = /Firefox\//.test(agent) ? 'Firefox'
+    : /Edg\//.test(agent) ? 'Edge'
+    : /OPR\//.test(agent) ? 'Opera'
+    : /Chrome\/|Chromium\//.test(agent) ? 'Chrome'
+    : /Safari\//.test(agent) ? 'Safari' : 'Browser';
+  return platform ? `${browser} on ${platform}` : browser;
 }
 
 async function connect(info: DeviceInfo, retry = false, open = false) {

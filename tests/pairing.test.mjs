@@ -3,6 +3,26 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 
+test('browser devices send a useful name when the hardware model is unavailable', async () => {
+  const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
+  const begin = source.indexOf('async function deviceName(');
+  const end = source.indexOf('\nasync function connect(', begin);
+  for (const [navigator, expected] of [
+    [{ userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0 Safari/537.36' }, 'Chrome on Linux'],
+    [{ userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Firefox/132.0' }, 'Firefox on Linux'],
+    [{ userAgent: 'Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Edg/130.0' }, 'Edge on Windows'],
+    [{ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X) Safari/605.1', platform: 'MacIntel', maxTouchPoints: 0 }, 'Safari on Mac'],
+    [{ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X) Safari/605.1', platform: 'MacIntel', maxTouchPoints: 5 }, 'iPad'],
+    [{ userAgent: 'Mozilla/5.0 (iPhone) Safari/605.1' }, 'iPhone'],
+    [{ userAgent: 'Mozilla/5.0 (Linux; Android 10) Chrome/130.0' }, 'Android'],
+    [{ userAgent: '', userAgentData: { async getHighEntropyValues() { return { model: 'Pixel 9' }; } } }, 'Pixel 9'],
+    [{ userAgent: '', userAgentData: { async getHighEntropyValues() { throw new Error('Unavailable'); } } }, 'Browser'],
+  ]) {
+    const { deviceName } = runInNewContext(source.slice(begin, end) + '\n({ deviceName })', { navigator });
+    assert.equal(await deviceName(), expected);
+  }
+});
+
 test('WebRTC setup failures restore pairing controls and close partially created peers', async () => {
   const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
   const begin = source.indexOf('async function connect(');
