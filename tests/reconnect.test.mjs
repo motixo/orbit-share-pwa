@@ -33,6 +33,7 @@ function connection() {
       saved(value) { pairs = value; renderPairs(); },
       pairs: () => pairs,
       disconnect,
+      revoke: revokeDevice,
       refresh: refreshItems,
       closePage() { pageClosed = true; },
       previewDownload() { downloadNavigationUntil = 6000; },
@@ -42,6 +43,7 @@ function connection() {
     document: { getElementById: getElement, querySelector: selector => getElement(selector), createElement: makeElement, addEventListener() {}, body: { classList: { remove() {} } } },
     window: { addEventListener(type, callback) { events.set(type, callback); } },
     navigator: {},
+    isRecord: value => value !== null && typeof value === 'object' && !Array.isArray(value),
     sessionStorage: { setItem(key, value) { storage.set(key, value); }, removeItem(key) { storage.delete(key); } },
     performance: { now: () => 1000 },
     setTimeout(callback, delay) { const id = ++next; timers.set(id, { callback, delay }); return id; },
@@ -125,6 +127,14 @@ test('disconnect keeps saved devices, clears retries, and hides the connected vi
   assert.equal(timers.size, 0);
   app.saved([]);
   assert.equal(paired.children.length, 0);
+});
+
+test('forget errors with metadata stop waiting immediately', async () => {
+  const { app, current, timers } = connection();
+  const pending = app.revoke(current);
+  current.control.emit('message', JSON.stringify({ message: 'Storage unavailable', type: 'forget-error' }));
+  await assert.rejects(pending, /Could not forget device/);
+  assert.equal(timers.size, 0);
 });
 
 test('a desktop disconnect stops retries and resume without forgetting the device', () => {

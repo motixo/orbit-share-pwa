@@ -204,7 +204,12 @@ function revokeDevice(current: ShareSession): Promise<void> {
         cleanup();
         try { if (control.readyState === 'open') control.send('forget-complete'); } catch {}
         resolve();
-      } else if (event.data === '{"type":"forget-error"}') closed();
+      } else if (typeof event.data === 'string' && event.data.startsWith('{')) {
+        try {
+          const response: unknown = JSON.parse(event.data);
+          if (isRecord(response) && response.type === 'forget-error') closed();
+        } catch {}
+      }
     };
     const timer = setTimeout(closed, 5000);
     control.addEventListener('message', message);
@@ -296,6 +301,7 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
   }
   const pc = peer;
   const current: ShareSession = { pc, control, info, ready: false, connecting: true, retry, lastSeen: performance.now() };
+  let finishPairing = () => {};
   session = current;
   renderPairs();
   control.addEventListener('message', event => {
@@ -327,7 +333,7 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
           if (typeof message.revision !== 'number' || !Number.isSafeInteger(message.revision) || message.revision < 0) throw new Error('Invalid revision');
           if (current.itemsRevision !== message.revision) {
             current.itemsRevision = message.revision;
-            await refreshItems(current);
+            if (current.info.key) await refreshItems(current);
           }
         } else if (message.type === 'challenge') {
           if (!info.key || typeof message.value !== 'string') throw new Error('Invalid challenge');
@@ -340,22 +346,34 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
           if (control.readyState === 'open') control.send(JSON.stringify({ type: 'proof', signature }));
         } else if (message.type === 'paired' && !current.forgotten) {
           await rememberDevice(message, current);
+          finishPairing();
         } else if (message.type === 'pairing-error') {
           statusElement.textContent = 'Could not remember device';
+          if (!current.info.key) {
+            current.error = statusElement.textContent;
+            current.retry = false;
+            disconnected(current);
+          }
         }
       })().catch(error => {
         if (session !== current) return;
         statusElement.textContent = errorMessage(error);
-        if (!current.ready) {
+        if (!current.ready || !current.info.key) {
           current.error = errorMessage(error);
           current.retry = false;
           disconnected(current);
         }
+        finishPairing();
       });
     }
   });
   const opened = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => { reject(new Error('Could not connect')); disconnected(current); }, open ? 22000 : 8000);
+    finishPairing = () => {
+      if (session !== current || !current.ready || !current.info.key) return;
+      clearTimeout(timer);
+      resolve();
+    };
     const closed = () => { clearTimeout(timer); reject(new Error(current.error || 'Disconnected')); };
     control.addEventListener('close', closed, { once: true });
     control.addEventListener('open', () => control.send(info.key ? JSON.stringify({ type: 'auth', id: info.id, share: info.share, resume: retry, open }) : info.token), { once: true });
@@ -374,12 +392,11 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
         return;
       }
       if (event.data !== 'ready') return;
-      clearTimeout(timer);
       control.removeEventListener('message', ready);
       current.ready = true;
       current.retry = true;
       current.lastSeen = performance.now();
-      resolve();
+      finishPairing();
     });
   });
   opened.catch(() => {});
