@@ -53,7 +53,7 @@ test('WebRTC setup failures restore pairing controls and close partially created
   }
 });
 
-test('New Orbit shows a remote rejection without retrying or forgetting the device', async () => {
+test('connection rejections forget a device only when the known server explicitly reports it unpaired', async () => {
   const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
   const begin = source.indexOf('async function connect(');
   const end = source.indexOf('\nfunction drain(', begin);
@@ -61,10 +61,14 @@ test('New Orbit shows a remote rejection without retrying or forgetting the devi
   for (const [response, expected] of [
     ['open-denied', 'Opening Orbits is not allowed on this computer.'],
     ['open-failed', 'Could not open Orbit.'],
+    ['rejected', 'Device not paired. Scan again.'],
+    ['unavailable', 'Open Orbit Share.'],
+    ['not-paired', 'Forgotten'],
   ]) {
     const timers = new Map();
     const status = { textContent: '' };
     const scan = { disabled: false };
+    const deleted = [];
     let auth;
     let next = 0;
     let peer;
@@ -91,7 +95,8 @@ test('New Orbit shows a remote rejection without retrying or forgetting the devi
       }
     }
     const app = runInNewContext(source.slice(0, source.indexOf('async function pairStore(')) +
-      source.slice(begin, end) + '\n({ connect, current: () => session })', {
+      source.slice(source.indexOf('async function forgetDevice('), source.indexOf('function stopConnection(')) +
+      source.slice(begin, end) + '\n({ connect, current: () => session, saved(value) { pairs = [value]; }, devices: () => pairs })', {
       RTCPeerConnection: Peer,
       document: { getElementById: id => id === 'status' ? status : {}, querySelector: () => scan },
       performance: { now: () => 0 },
@@ -99,9 +104,11 @@ test('New Orbit shows a remote rejection without retrying or forgetting the devi
       clearTimeout(id) { timers.delete(id); }, clearInterval() {},
       validateInfo: value => value,
       stopCamera() {}, clearThumbnails() {}, pumpRequests() {}, renderPairs() {},
+      async pairStore(action, fingerprint) { assert.equal(action, 'delete'); deleted.push(fingerprint); },
       errorMessage: error => error.message,
     });
-    const device = { key: {}, id: 'paired-device', share: 'previous-orbit', host: '192.168.1.2', port: 42000 };
+    const device = { key: {}, id: 'paired-device', share: 'previous-orbit', host: '192.168.1.2', port: 42000, fingerprint: 'desktop' };
+    app.saved(device);
     await app.connect(device, false, true);
     assert.equal(auth.open, true);
     assert.equal(auth.resume, false);
@@ -112,6 +119,8 @@ test('New Orbit shows a remote rejection without retrying or forgetting the devi
     assert.equal(peer.connectionState, 'closed');
     assert.equal(timers.size, 0);
     assert.equal(scan.disabled, false);
+    assert.deepEqual(deleted, response === 'not-paired' ? ['desktop'] : []);
+    assert.equal(app.devices().length, response === 'not-paired' ? 0 : 1);
   }
 });
 

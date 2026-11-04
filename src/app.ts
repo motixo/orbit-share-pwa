@@ -360,15 +360,16 @@ async function connect(info: DeviceInfo, retry = false, open = false) {
     control.addEventListener('open', () => control.send(info.key ? JSON.stringify({ type: 'auth', id: info.id, share: info.share, resume: retry, open }) : info.token), { once: true });
     control.addEventListener('message', function ready(event) {
       if (session !== current) return;
-      if (['rejected', 'unavailable', 'open-denied', 'open-failed'].includes(event.data)) {
+      if (['not-paired', 'rejected', 'unavailable', 'open-denied', 'open-failed'].includes(event.data)) {
         clearTimeout(timer);
         control.removeEventListener('message', ready);
         if (event.data !== 'unavailable') current.retry = false;
-        current.error = event.data === 'rejected' ? 'Device not paired. Scan again.'
+        current.error = event.data === 'not-paired' || event.data === 'rejected' ? 'Device not paired. Scan again.'
           : event.data === 'open-denied' ? 'Opening Orbits is not allowed on this computer.'
           : event.data === 'open-failed' ? 'Could not open Orbit.' : 'Open Orbit Share.';
         reject(new Error(current.error));
         disconnected(current);
+        if (event.data === 'not-paired' && info.key) void forgetDevice(current.info, scanButton);
         return;
       }
       if (event.data !== 'ready') return;
