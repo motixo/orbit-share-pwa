@@ -7,7 +7,7 @@ let entry: FileSystemFileHandle | undefined;
 let access: FileSystemSyncAccessHandle | undefined;
 let filename = '';
 let offset = 0;
-let expected: number | null = null;
+let expected: number | undefined;
 let queue = Promise.resolve();
 
 async function discard() {
@@ -33,20 +33,21 @@ downloads.addEventListener('message', event => {
         break;
       }
       case 'prepare': {
-        if (!access || !Number.isSafeInteger(event.data.size) || event.data.size < -1) throw new Error('Invalid file size');
-        expected = event.data.size < 0 ? null : event.data.size;
+        const size = event.data.size;
+        if (!access || !Number.isSafeInteger(size) || size < 0) throw new Error('Invalid file size');
+        expected = size;
         const storage = await navigator.storage.estimate?.().catch(() => undefined);
-        if (expected !== null && storage?.quota !== undefined && expected > storage.quota - (storage.usage ?? 0)) {
+        if (storage?.quota !== undefined && size > storage.quota - (storage.usage ?? 0)) {
           throw new Error('Not enough browser storage');
         }
         break;
       }
       case 'write': {
-        if (!access || !(event.data.data instanceof ArrayBuffer)) throw new Error('Invalid download');
+        if (!access || expected === undefined || !(event.data.data instanceof ArrayBuffer)) throw new Error('Invalid download');
         const bytes = new Uint8Array(event.data.data);
         const position = event.data.position;
         if (!Number.isSafeInteger(position) || position < 0 || !Number.isSafeInteger(position + bytes.length) ||
-          expected !== null && position + bytes.length > expected) throw new Error('Invalid file position');
+          position + bytes.length > expected) throw new Error('Invalid file position');
         let written = 0;
         while (written < bytes.length) {
           const count = access.write(bytes.subarray(written), { at: position + written });
@@ -54,11 +55,11 @@ downloads.addEventListener('message', event => {
           written += count;
         }
         offset = Math.max(offset, position + written);
-        if (!Number.isSafeInteger(offset) || expected !== null && offset > expected) throw new Error('Invalid file size');
+        if (!Number.isSafeInteger(offset) || offset > expected) throw new Error('Invalid file size');
         break;
       }
       case 'finish': {
-        if (!access || !entry || expected !== null && offset !== expected) throw new Error('Incomplete file');
+        if (!access || !entry || offset !== expected) throw new Error('Incomplete file');
         access.flush();
         access.close();
         access = undefined;

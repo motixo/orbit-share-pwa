@@ -111,6 +111,34 @@ test('disk downloads tolerate missing estimates and clean up partial files', asy
   }
 });
 
+test('disk downloads require an exact nonnegative size before writing or finishing', async () => {
+  const source = readFileSync(new URL('../dist/download-worker.js', import.meta.url), 'utf8').replace('export {};', '');
+  for (const command of [
+    { type: 'prepare', size: -1 },
+    { type: 'write', position: 0, data: new ArrayBuffer(1) },
+    { type: 'finish' },
+  ]) {
+    const replies = [];
+    let message, removed = false;
+    const access = { close() {}, write() { assert.fail('unprepared download wrote data'); } };
+    const directory = {
+      async *entries() {},
+      async getFileHandle() { return { async createSyncAccessHandle() { return access; } }; },
+      async removeEntry() { removed = true; },
+    };
+    runInNewContext(source, {
+      self: { addEventListener(name, callback) { message = callback; }, postMessage(value) { replies.push(value); } },
+      navigator: { storage: { async getDirectory() { return { async getDirectoryHandle() { return directory; } }; } } },
+      crypto: { randomUUID: () => 'download' }, ArrayBuffer,
+    });
+    message({ data: { type: 'open' } });
+    message({ data: command });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(typeof replies.at(-1).error, 'string');
+    assert.equal(removed, true);
+  }
+});
+
 test('finalized downloads can still be aborted before they are saved', async () => {
   const source = readFileSync(new URL('../dist/app.js', import.meta.url), 'utf8');
   const begin = source.indexOf('async function downloadSink(');
