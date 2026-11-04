@@ -1203,10 +1203,35 @@ if ('serviceWorker' in navigator) {
       try { sessionStorage.setItem('orbit-updated', 'true'); } catch {}
       location.reload();
     }
-    else pending!.postMessage({ type: 'activate' });
+    else {
+      const target = pending!;
+      const timeout = setTimeout(() => {
+        target.removeEventListener('statechange', activated);
+        pending = undefined;
+        reloading = false;
+        const reload = document.createElement('button');
+        reload.type = 'button';
+        reload.textContent = 'Reload';
+        reload.addEventListener('click', () => { changed = true; applyUpdate(); });
+        notice.replaceChildren('Update ready ', reload);
+      }, 10000);
+      const activated = () => {
+        if (target.state !== 'activated') return;
+        clearTimeout(timeout);
+        target.removeEventListener('statechange', activated);
+        if (changed) return;
+        changed = true;
+        reloading = false;
+        applyUpdate();
+      };
+      target.addEventListener('statechange', activated);
+      try { target.postMessage({ type: 'activate' }); }
+      catch { clearTimeout(timeout); target.removeEventListener('statechange', activated); pending = undefined; reloading = false; notify('Update unavailable · reload to retry'); }
+      activated();
+    }
   };
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (controlled) { changed = true; reloading = false; applyUpdate(); }
+    if (controlled && !changed) { changed = true; reloading = false; applyUpdate(); }
     controlled = true;
   });
   const prepare = async (target: ServiceWorker, update: boolean) => {
